@@ -1,0 +1,53 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# Wobble (wob) CLI Launcher
+# Portable bootstrap for Termux and Linux environments
+
+set -e
+
+# Resolve script directory (handling symlinks)
+PRG="$0"
+while [ -h "$PRG" ]; do
+    ls=`ls -ld "$PRG"`
+    link=`expr "$ls" : '.*-> \(.*\)$'`
+    if expr "$link" : '/.*' > /dev/null; then
+        PRG="$link"
+    else
+        PRG=`dirname "$PRG"`"/$link"
+    fi
+done
+WOBBLE_BIN_DIR=`dirname "$PRG"`
+WOBBLE_ROOT=`cd "$WOBBLE_BIN_DIR/.." >/dev/null 2>&1 && pwd`
+
+# Check for Python 3
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif [ -x "/data/data/com.termux/files/usr/bin/python3" ]; then
+    PYTHON_BIN="/data/data/com.termux/files/usr/bin/python3"
+elif [ -x "$PREFIX/bin/python3" ]; then
+    PYTHON_BIN="$PREFIX/bin/python3"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "\033[33m[Wobble Bootstrap]\033[0m Python 3 is required to run Wobble."
+    if command -v pkg >/dev/null 2>&1; then
+        echo "Installing Python 3 via Termux package manager (pkg install -y python)..."
+        pkg install -y python
+        PYTHON_BIN="python3"
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "Installing Python 3 via apt-get..."
+        apt-get update && apt-get install -y python3
+        PYTHON_BIN="python3"
+    else
+        echo "\033[31mError:\033[0m Could not locate or install Python 3. Please install Python 3 manually."
+        exit 127
+    fi
+fi
+
+# Ensure Wobble root is in PYTHONPATH
+export PYTHONPATH="$WOBBLE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+# Execute Wobble CLI and forward all arguments & exit code
+exec "$PYTHON_BIN" -m wobble.cli "$@"
