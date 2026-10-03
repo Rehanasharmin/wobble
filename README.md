@@ -16,13 +16,17 @@ Wobble is designed to be **beginner-friendly** for new mobile developers while p
 ## Quick Start (Up and running in 2 minutes)
 
 ### 1. Install Wobble in Termux
-Run the installer script:
+
+Run the one-line installer in Termux:
 ```bash
-sh install.sh
+curl -sL https://raw.githubusercontent.com/Rehanasharmin/wobble/main/install.sh | sh
 ```
-Or symlink `bin/wob` directly into your path:
+
+Or install by cloning the repository:
 ```bash
-ln -sf ~/wobble/bin/wob ~/.local/bin/wob
+git clone https://github.com/Rehanasharmin/wobble.git ~/wobble
+cd ~/wobble
+sh install.sh
 ```
 
 ### 2. Verify Your Environment

@@ -50,16 +50,30 @@ CURRENT_SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "${LOCAL_BIN}"
 mkdir -p "${HOME_DIR}/.wobble"
 
-# If running installer from cloned repository, use this repository
+REPO_URL="https://github.com/Rehanasharmin/wobble.git"
+
+# If running installer from cloned repository, use this repository, otherwise clone into TARGET_DIR
 if [ -f "${CURRENT_SCRIPT_DIR}/bin/wob" ]; then
     WOB_EXECUTABLE="${CURRENT_SCRIPT_DIR}/bin/wob"
+    SCRIPT_ROOT="${CURRENT_SCRIPT_DIR}"
 else
+    if [ ! -d "${TARGET_DIR}" ] || [ ! -f "${TARGET_DIR}/bin/wob" ]; then
+        echo "${BLUE}➜${RESET} Downloading Wobble repository to ${TARGET_DIR}..."
+        if ! command -v git >/dev/null 2>&1; then
+            if [ "$IS_TERMUX" = true ] && command -v pkg >/dev/null 2>&1; then
+                echo "${YELLOW}ℹ${RESET} Installing git..."
+                pkg install -y git
+            fi
+        fi
+        git clone "${REPO_URL}" "${TARGET_DIR}"
+    fi
     WOB_EXECUTABLE="${TARGET_DIR}/bin/wob"
+    SCRIPT_ROOT="${TARGET_DIR}"
 fi
 
 chmod +x "${WOB_EXECUTABLE}"
-chmod +x "${CURRENT_SCRIPT_DIR}/uninstall.sh" 2>/dev/null || true
-chmod +x "${CURRENT_SCRIPT_DIR}/tests/run_tests.py" 2>/dev/null || true
+chmod +x "${SCRIPT_ROOT}/uninstall.sh" 2>/dev/null || true
+chmod +x "${SCRIPT_ROOT}/tests/run_tests.py" 2>/dev/null || true
 
 # 4. Create Symlink in ~/.local/bin
 echo "${BLUE}➜${RESET} Linking executable to ${LOCAL_BIN}/wob..."
