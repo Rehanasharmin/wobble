@@ -36,11 +36,13 @@ def find_apks(project_root: Optional[Path] = None) -> List[Path]:
                 if item not in candidates:
                     candidates.append(item)
 
-    # If none found in priority dirs, do a recursive scan excluding node_modules / .git
+    # If none found in priority dirs, do a fast walk pruning heavy folders
     if not candidates and root.is_dir():
-        for item in root.rglob("*.apk"):
-            if "node_modules" not in item.parts and ".gradle" not in item.parts:
-                candidates.append(item)
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in {".git", "node_modules", ".gradle", ".cache", ".wobble", "__pycache__"}]
+            for f in filenames:
+                if f.endswith(".apk"):
+                    candidates.append(Path(dirpath) / f)
 
     # Sort candidates by modification time (newest first)
     candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
@@ -215,9 +217,9 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
             return {
                 "success": False,
                 "method": "adb",
-                "error": "ADB executable not found. Install android-tools or use standard method."
+                "error": "ADB executable not found. Install android-tools (pkg install -y android-tools) or use standard method."
             }
-        res = run_command([adb_bin, "install", "-r", str(path)], timeout=30)
+        res = run_command([adb_bin, "install", "-r", str(path)], timeout=60)
         is_success = "Success" in res.stdout
         return {
             "success": is_success,
@@ -227,37 +229,196 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
         }
 
     # 2. Termux-open method (Standard on-device Android workflow)
-    termux_open = find_tool("termux-open")
-    if termux_open:
-        res = run_command([termux_open, str(path)])
-        if res.success:
-            return {
-                "success": True,
-                "method": "termux-open",
-                "message": "Dispatched to Android Package Installer. Look at your phone screen to confirm installation."
-            }
+    if method in ("auto", "termux-open"):
+        termux_open = find_tool("termux-open")
+        if termux_open:
+            # Pass content-type so Android knows immediately this is an APK to install
+            res = run_command([termux_open, "--content-type", "application/vnd.android.package-archive", str(path)])
+            if not res.success:
+                res = run_command([termux_open, str(path)])
+            if res.success:
+                return {
+                    "success": True,
+                    "method": "termux-open",
+                    "message": "Dispatched to Android Package Installer. Look at your phone screen to confirm installation."
+                }
+            elif method == "termux-open":
+                return {
+                    "success": False,
+                    "method": "termux-open",
+                    "error": f"termux-open failed: {res.stderr or res.stdout}"
+                }
 
     # 3. Android Intent 'am start' fallback
-    am_bin = find_tool("termux-am") or find_tool("am") or "/system/bin/am"
-    if am_bin:
-        res = run_command([
-            am_bin, "start",
-            "-a", "android.intent.action.VIEW",
-            "-d", f"file://{path}",
-            "-t", "application/vnd.android.package-archive"
-        ])
-        if res.success:
-            return {
-                "success": True,
-                "method": "am_start",
-                "message": "Dispatched VIEW intent to Android Package Installer. Check your screen to confirm installation."
-            }
+    if method in ("auto", "am"):
+        am_bin = find_tool("termux-am") or find_tool("am") or "/system/bin/am"
+        if am_bin and os.path.exists(am_bin):
+            res = run_command([
+                am_bin, "start",
+                "--user", "0",
+                "-a", "android.intent.action.VIEW",
+                "-d", f"file://{path}",
+                "-t", "application/vnd.android.package-archive"
+            ])
+            if res.success:
+                return {
+                    "success": True,
+                    "method": "am_start",
+                    "message": "Dispatched VIEW intent to Android Package Installer. Check your screen to confirm installation."
+                }
+            elif method == "am":
+                return {
+                    "success": False,
+                    "method": "am",
+                    "error": f"am start failed: {res.stderr or res.stdout}"
+                }
+
+    if method != "auto":
+        return {
+            "success": False,
+            "method": method,
+            "error": f"Requested install method '{method}' is not available on this system."
+        }
 
     return {
         "success": False,
         "method": "none",
         "error": "Could not find 'termux-open' or 'am'. Make sure 'termux-tools' package is installed."
     }
+
+
+def share_apk(apk_path: Path, dest_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Export APK to Android shared storage (e.g. ~/storage/shared/Download).
+    Makes the APK accessible directly in the Android Files / Downloads app.
+    """
+    path = Path(apk_path).resolve()
+    if not path.is_file():
+        return {"success": False, "error": f"APK file not found: {path}"}
+
+    from wobble.core.context import get_home
+    home = get_home()
+
+    target_dest = None
+    if dest_dir:
+        target_dest = Path(dest_dir).resolve()
+    else:
+        # Check standard Termux shared storage paths
+        download_candidates = [
+            home / "storage" / "shared" / "Download",
+            home / "storage" / "downloads",
+            home / "storage" / "shared" / "Downloads",
+            home / "storage" / "download"
+        ]
+        for cand in download_candidates:
+            if cand.is_dir():
+                target_dest = cand
+                break
+
+        if not target_dest:
+            shared_cand = home / "storage" / "shared"
+            if shared_cand.is_dir():
+                target_dest = shared_cand
+
+    if not target_dest or not target_dest.is_dir():
+        return {
+            "success": False,
+            "error": (
+                "Android shared storage directory not found (~/storage/shared/Download). "
+                "Please run 'termux-setup-storage' in Termux and grant permission."
+            )
+        }
+
+    try:
+        import shutil
+        dest_file = target_dest / path.name
+        shutil.copy2(path, dest_file)
+        return {
+            "success": True,
+            "source": str(path),
+            "destination": str(dest_file),
+            "message": f"Exported {path.name} to {dest_file}"
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to export APK: {e}"}
+
+
+def sign_apk(
+    apk_path: Path,
+    keystore: Optional[Path] = None,
+    key_alias: Optional[str] = None,
+    key_pass: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Sign an APK file using apksigner and debug or user keystore.
+    """
+    path = Path(apk_path).resolve()
+    if not path.is_file():
+        return {"success": False, "error": f"APK file not found: {path}"}
+
+    apksigner_bin = find_tool("apksigner")
+    if not apksigner_bin:
+        return {
+            "success": False,
+            "error": "apksigner not found. Install it with: pkg install -y apksigner"
+        }
+
+    from wobble.core.context import get_wobble_home
+    keystore_path = keystore
+    if not keystore_path:
+        default_ks = get_wobble_home() / "debug.keystore"
+        if not default_ks.exists():
+            keytool_bin = find_tool("keytool")
+            if keytool_bin:
+                default_ks.parent.mkdir(parents=True, exist_ok=True)
+                gen_cmd = [
+                    keytool_bin, "-genkeypair", "-v",
+                    "-keystore", str(default_ks),
+                    "-storepass", "android",
+                    "-alias", "androiddebugkey",
+                    "-keypass", "android",
+                    "-keyalg", "RSA",
+                    "-keysize", "2048",
+                    "-validity", "10000",
+                    "-dname", "CN=Android Debug,O=Android,C=US"
+                ]
+                res_gen = run_command(gen_cmd)
+                if not res_gen.success:
+                    return {
+                        "success": False,
+                        "error": f"Failed to generate debug keystore with keytool: {res_gen.stderr}"
+                    }
+            else:
+                return {
+                    "success": False,
+                    "error": "No keystore provided and 'keytool' not found to generate debug keystore."
+                }
+        keystore_path = default_ks
+        key_alias = key_alias or "androiddebugkey"
+        key_pass = key_pass or "android"
+
+    sign_cmd = [
+        apksigner_bin, "sign",
+        "--ks", str(keystore_path),
+        "--ks-pass", f"pass:{key_pass}",
+        "--ks-key-alias", key_alias or "androiddebugkey",
+        str(path)
+    ]
+
+    res = run_command(sign_cmd, timeout=30)
+    if res.success:
+        return {
+            "success": True,
+            "apk": str(path),
+            "keystore": str(keystore_path),
+            "message": f"Successfully signed {path.name}"
+        }
+    else:
+        return {
+            "success": False,
+            "apk": str(path),
+            "error": f"apksigner failed: {res.stderr or res.stdout}"
+        }
 
 
 def _format_bytes(b: int) -> str:

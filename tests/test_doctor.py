@@ -24,7 +24,11 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("Dev Tools", categories)
 
     def test_run_doctor_data(self):
-        report = run_doctor(json_mode=True)
+        import io
+        from contextlib import redirect_stdout
+        f = io.StringIO()
+        with redirect_stdout(f):
+            report = run_doctor(json_mode=True)
         self.assertIn("status", report)
         self.assertIn("counts", report)
         self.assertIn("checks", report)

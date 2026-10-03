@@ -95,7 +95,18 @@ def run_command(
 
     # Verify binary exists
     executable = cmd[0]
-    resolved = shutil.which(executable, path=exec_env.get("PATH"))
+    resolved = None
+    if "/" in executable:
+        # Check relative to cwd or absolute
+        cand = (Path(target_cwd) / executable) if target_cwd else Path(executable)
+        if cand.is_file() and os.access(cand, os.X_OK):
+            resolved = str(cand.resolve())
+        elif cand.is_file():
+            # Exists but might not have executable bit set yet
+            resolved = str(cand.resolve())
+    if not resolved:
+        resolved = shutil.which(executable, path=exec_env.get("PATH"))
+
     if not resolved and not os.path.isabs(executable):
         return ExecutionResult(
             command=cmd,
@@ -160,7 +171,14 @@ def stream_command(
     target_cwd = str(cwd) if cwd else None
 
     executable = cmd[0]
-    resolved = shutil.which(executable, path=exec_env.get("PATH"))
+    resolved = None
+    if "/" in executable:
+        cand = (Path(target_cwd) / executable) if target_cwd else Path(executable)
+        if cand.is_file():
+            resolved = str(cand.resolve())
+    if not resolved:
+        resolved = shutil.which(executable, path=exec_env.get("PATH"))
+
     if not resolved and not os.path.isabs(executable):
         print(f"Error: Executable '{executable}' not found in PATH.", file=sys.stderr)
         return 127

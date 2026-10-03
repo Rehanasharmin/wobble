@@ -110,6 +110,18 @@ except ImportError:
         with open(req_txt, "w", encoding="utf-8") as f:
             f.write("flask>=3.0.0\n")
 
+        gitignore = target_dir / ".gitignore"
+        with open(gitignore, "w", encoding="utf-8") as f:
+            f.write("""__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+.DS_Store
+""")
+
         spec = ProjectSpec(
             name=name,
             project_type="web",

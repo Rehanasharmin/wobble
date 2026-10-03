@@ -136,6 +136,16 @@ export default app;
 </style>
 """)
 
+        gitignore = target_dir / ".gitignore"
+        with open(gitignore, "w", encoding="utf-8") as f:
+            f.write("""node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+.DS_Store
+""")
+
         spec = ProjectSpec(
             name=name,
             project_type="web",

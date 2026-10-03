@@ -80,6 +80,30 @@ class TestProject(unittest.TestCase):
         self.assertIn("metrics", info)
         self.assertGreater(info["metrics"]["file_count"], 0)
 
+    def test_gitignore_and_wrapper(self):
+        android_plugin = get_plugin("android")
+        app_dir = self.test_path / "test_app_extra"
+        android_plugin.create_project("test_app_extra", app_dir)
+
+        self.assertTrue((app_dir / ".gitignore").exists())
+        self.assertTrue((app_dir / "gradle" / "wrapper" / "gradle-wrapper.properties").exists())
+
+    def test_register_and_unregister_project(self):
+        p_name = "test_reg_proj"
+        p_path = self.test_path / p_name
+        p_path.mkdir()
+
+        register_project(p_name, p_path)
+        from wobble.project.manager import list_projects
+        projs = list_projects()
+        names = [p["name"] for p in projs]
+        self.assertIn(p_name, names)
+
+        unregister_project(p_name)
+        projs_after = list_projects()
+        names_after = [p["name"] for p in projs_after]
+        self.assertNotIn(p_name, names_after)
+
 
 if __name__ == "__main__":
     unittest.main()

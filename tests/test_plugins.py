@@ -31,6 +31,13 @@ class TestPlugins(unittest.TestCase):
         prereq = static_plugin.check_prerequisites()
         self.assertTrue(prereq["ready"])
 
+    def test_plugin_aliases(self):
+        self.assertEqual(get_plugin("python").name, "python_web")
+        self.assertEqual(get_plugin("flask").name, "python_web")
+        self.assertEqual(get_plugin("fastapi").name, "python_web")
+        self.assertEqual(get_plugin("static").name, "static_web")
+        self.assertEqual(get_plugin("next").name, "nextjs")
+
 
 if __name__ == "__main__":
     unittest.main()

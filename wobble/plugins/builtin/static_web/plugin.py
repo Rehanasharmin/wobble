@@ -224,6 +224,13 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 """)
 
+        gitignore = target_dir / ".gitignore"
+        with open(gitignore, "w", encoding="utf-8") as f:
+            f.write(""".DS_Store
+dist/
+build/
+""")
+
         spec = ProjectSpec(
             name=name,
             project_type="web",

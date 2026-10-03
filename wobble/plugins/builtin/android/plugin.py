@@ -216,6 +216,33 @@ public class MainActivity extends AppCompatActivity {{
 </resources>
 """)
 
+        # 10. .gitignore
+        gitignore = target_dir / ".gitignore"
+        with open(gitignore, "w", encoding="utf-8") as f:
+            f.write("""*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+""")
+
+        # 11. gradle/wrapper/gradle-wrapper.properties
+        wrapper_dir = target_dir / "gradle" / "wrapper"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        wrapper_props = wrapper_dir / "gradle-wrapper.properties"
+        with open(wrapper_props, "w", encoding="utf-8") as f:
+            f.write("""distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2-bin.zip
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+""")
+
         # 10. Write wobble.json spec
         spec = ProjectSpec(
             name=name,

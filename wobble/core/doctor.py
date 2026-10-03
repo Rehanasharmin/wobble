@@ -481,8 +481,8 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
             suggested_pkg.append("nodejs")
         if any(r.name == "Java / JDK" and r.status == "missing" for r in results):
             suggested_pkg.append("openjdk-17")
-        if any(r.name == "Android Build Tools" and r.status == "missing" for r in results):
-            suggested_pkg.append("aapt")
+        if any(r.name == "Android Build Tools" and r.status in ("missing", "warning") for r in results):
+            suggested_pkg.append("aapt apksigner")
         if suggested_pkg:
             print(f"  pkg install -y {' '.join(suggested_pkg)}")
 

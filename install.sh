@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # Wobble Installer for Termux on Android
 # "Termux -> Wobble -> Projects -> Frameworks -> Build -> Test -> APK/Web app"
 

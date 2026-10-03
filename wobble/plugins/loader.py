@@ -18,15 +18,31 @@ _PLUGINS_REGISTRY: Dict[str, BasePlugin] = {}
 _INITIALIZED: bool = False
 
 
+FRAMEWORK_ALIASES: Dict[str, str] = {
+    "python": "python_web",
+    "flask": "python_web",
+    "fastapi": "python_web",
+    "py": "python_web",
+    "static": "static_web",
+    "html": "static_web",
+    "html5": "static_web",
+    "next": "nextjs",
+    "reactjs": "react",
+    "vuejs": "vue",
+    "sveltejs": "svelte",
+}
+
+
 def register_plugin(plugin: BasePlugin):
     """Register a plugin instance."""
     _PLUGINS_REGISTRY[plugin.name] = plugin
 
 
 def get_plugin(name: str) -> Optional[BasePlugin]:
-    """Retrieve a plugin by name."""
+    """Retrieve a plugin by name or alias."""
     init_plugins()
-    return _PLUGINS_REGISTRY.get(name)
+    normalized = FRAMEWORK_ALIASES.get(name.lower(), name)
+    return _PLUGINS_REGISTRY.get(normalized)
 
 
 def list_plugins() -> List[BasePlugin]:

@@ -166,14 +166,17 @@ def get_project_info(project_dir: Optional[Path] = None) -> Optional[Dict[str, A
     path = spec.path
     file_count = 0
     total_size = 0
+    skip_dirs = {".git", "node_modules", ".gradle", ".cache", ".wobble", "__pycache__", ".next", "dist", "build", ".venv"}
     try:
-        for f in path.rglob("*"):
-            # skip .git and node_modules for quick stats
-            if ".git" in f.parts or "node_modules" in f.parts or ".gradle" in f.parts:
-                continue
-            if f.is_file():
-                file_count += 1
-                total_size += f.stat().st_size
+        for dirpath, dirnames, filenames in os.walk(path):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for f in filenames:
+                fp = Path(dirpath) / f
+                try:
+                    total_size += fp.stat().st_size
+                    file_count += 1
+                except Exception:
+                    pass
     except Exception:
         pass
 

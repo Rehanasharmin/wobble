@@ -1,180 +1,192 @@
 # Wobble (`wob`)
 
-> **Production-Ready Termux Development Workstation**  
-> *"Termux → Wobble → Projects → Frameworks → Build → Test → APK / Web app"*
-
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Termux%20%7C%20Android%20ARM64-green.svg)](https://termux.dev)
-[![AI Ready](https://img.shields.io/badge/AI%20Agent-Compatible-purple.svg)](AI_GUIDE.md)
-
-**Wobble** turns Termux on Android into a simple, unified, and powerful development workstation. Create, build, test, run, manage, and install Android and modern web applications from one memorable CLI command: `wob`.
-
-Wobble is designed to be **beginner-friendly** for new mobile developers while providing **zero-overhead, machine-readable interfaces (`--json`, `wob schema`)** for experienced developers and AI coding agents.
+A streamlined, practical development tool for building native Android apps and modern web projects directly inside Termux on Android.
 
 ---
 
-## Quick Start (Up and running in 2 minutes)
+## Why Wobble?
 
-### 1. Install Wobble in Termux
+If you've ever tried building Android apps or web projects on your phone using Termux, you already know the pain points:
+
+- **Gradle memory crashes:** Standard Gradle spins up background daemons that quickly eat up all your phone's RAM until Android's process killer terminates your build midway.
+- **Buried APK outputs:** Compiled APKs end up hidden four folders deep (`app/build/outputs/apk/debug/app-debug.apk`), forcing you to write long copy commands every time you want to test them.
+- **Clunky on-device installs:** Non-root Android doesn't let you silently install APKs from the terminal. Most guides assume you have ADB running or root access.
+- **Localhost-only web servers:** Default dev servers bind to `127.0.0.1`, which prevents you from testing your work from a laptop or tablet on the same Wi-Fi.
+
+**Wobble** solves these problems with a single CLI tool (`wob`). It gives you project scaffolding, automated Gradle builds tailored for mobile RAM, zero-dependency APK inspection, LAN-ready web previews, and clean on-device APK installation through standard Android intents. No root, no Shizuku, and no desktop machine required.
+
+---
+
+## Quick Start
+
+### 1. Install Wobble
 
 Run the one-line installer in Termux:
 ```bash
 curl -sL https://raw.githubusercontent.com/Rehanasharmin/wobble/main/install.sh | sh
 ```
 
-Or install by cloning the repository:
+Or clone and set it up manually:
 ```bash
 git clone https://github.com/Rehanasharmin/wobble.git ~/wobble
 cd ~/wobble
 sh install.sh
 ```
 
-### 2. Verify Your Environment
-Run the comprehensive environment doctor:
+Restart your terminal or run `source ~/.bashrc` so the `wob` command is in your `PATH`.
+
+### 2. Run the Health Check
+
+Before building anything, run the environment doctor:
 ```bash
 wob doctor
 ```
-Wobble inspects CPU architecture, storage, RAM, JDK, Gradle, SDK, Node.js, Python, PHP, and gives you actionable copy-paste fixes for anything missing.
+Wobble checks your CPU architecture (ARM64/x86), RAM, available disk space, Java JDK, Android build tools, Node.js, Python, and Git. If anything is missing, it gives you the exact `pkg install` command to fix it.
 
-### 3. Create Your First Project
+---
 
-#### Native Android App
+## Hands-on Workflows
+
+### Native Android Apps
+
+Create and build an Android app right on your phone:
+
 ```bash
-# Create an Android project
+# 1. Scaffold a new Android project
 wob create android myapp --package com.example.myapp
 
-# Navigate and build debug APK
+# 2. Enter the directory
 cd myapp
-wob apk build
 
-# Inspect APK package, permissions, and size
+# 3. Compile the debug APK
+wob apk build
+```
+
+Wobble automatically configures Gradle with `--no-daemon` and caps JVM memory at 1024 MB to prevent Android from killing the build process.
+
+Once built, you have three quick ways to work with the APK:
+
+```bash
+# Inspect package name, permissions, min/target SDK, and SHA-256
 wob apk info
 
-# Install APK onto your Android phone
+# Trigger the Android system Package Installer dialog directly on your screen
 wob apk install
+
+# Export the APK to your phone's Download folder (~/storage/shared/Download)
+wob apk share
 ```
 
-#### Modern Web Application
-```bash
-# Create a web application (e.g. Vite, React, Vue, Svelte, or Python)
-wob create web mysite --framework react
+> **Tip:** If `wob apk share` tells you storage isn't set up, run `termux-setup-storage` once in Termux and allow the Android permission prompt.
 
-# Navigate and preview
-cd mysite
+---
+
+### Modern Web Projects
+
+Wobble supports modern frontend frameworks as well as lightweight Python and PHP backends:
+
+```bash
+# Supported frameworks: vite, react, vue, svelte, nextjs, python, php, static
+wob create web myfrontend --framework react
+cd myfrontend
+
+# Install dependencies (npm, pip, or composer depending on project)
+wob deps install
+
+# Start development server
+wob web dev
+```
+
+#### Preview on Localhost & LAN
+Want to test your site on a tablet or laptop connected to the same Wi-Fi? Run:
+
+```bash
 wob web preview
 ```
-Wobble instantly spins up a local server and outputs:
+
+Wobble starts a preview server and displays both local and network addresses:
 ```
-WOBBLE WEB PREVIEW RUNNING
-Local:    http://localhost:3000/
-Network:  http://192.168.1.45:3000/
+======================================================
+         ⚡ WOBBLE WEB PREVIEW RUNNING
+======================================================
+  Directory: /data/data/com.termux/files/home/myfrontend
+  ➜ Local:    http://localhost:3000/
+  ➜ Network:  http://192.168.1.75:3000/
+------------------------------------------------------
+  Tip: Open the Network URL on any device on your Wi-Fi!
 ```
-Open the **Network URL** on any computer, tablet, or phone on your Wi-Fi to test live on real devices!
+
+The preview server includes built-in SPA fallback routing so client-side routers (React Router, Vue Router, etc.) don't 404 when you refresh a page.
 
 ---
 
-## Key Features
+## Practical Tips for Developing in Termux
 
-### 1. Unified Project Management
-- **Scaffolding:** `wob create android <name>` or `wob create web <name>`.
-- **Introspection:** `wob project list`, `wob project info`, and `wob project open <name>`.
-- **Machine-readable:** Every project contains a standardized `wobble.json` descriptor.
+1. **Keep projects in `$HOME`:**  
+   Never create projects on `/sdcard` or shared storage. Android's SELinux policy enforces W^X (Write XOR Execute) protections that block running binaries and scripts from shared storage. Always use `~/projects` or `$HOME`.
 
-### 2. Native Android Development on Termux
-- **No root required.** Never assumes Shizuku or ADB exists.
-- **Toolchain detection:** Detects Java 17/21, Gradle, Android SDK, and native Termux build tools (`aapt`, `apksigner`).
-- **Automated builds:** Generates debug and release APKs with resource-conscious Gradle JVM settings (`--no-daemon`, `-Xmx1024m`).
-- **Automated APK discovery:** Automatically scans and locates APK outputs.
-- **Zero-dependency APK inspector:** Parses APK contents, package IDs, DEX files, ABIs, permissions, and SHA-256 signatures directly in Python without requiring external tools.
-- **On-device APK install:** Dispatches Android Package Installer intents cleanly via `termux-open` or `am start`.
+2. **Low-RAM devices (Under 4 GB):**  
+   If Gradle builds fail with out-of-memory errors:
+   - Close heavy background apps before compiling.
+   - Consider enabling ZRAM / swap if your device kernel supports it.
+   - Wobble builds with single-worker execution by default to conserve CPU and RAM.
 
-### 3. Multi-Technology Web Development
-- Supports **Vite, React, Vue, Svelte, Next.js, Python Web (Flask/FastAPI), PHP**, and pure static HTML5/CSS3.
-- Framework auto-detection: Wobble automatically detects framework configuration and runs the proper commands.
-- Local & LAN previews: Test responsive designs instantly from your laptop or tablet on the same Wi-Fi.
-
-### 4. Unified Dependency Management (`wob deps`)
-Clearly routes dependencies to the correct package manager:
-- `wob deps install`: Installs project dependencies or toolchain stacks (`android`, `node`, `python`, `php`).
-- `wob deps add <pkg>`: Safely adds packages via `termux (pkg)`, `npm`, `pip`, or `composer`.
-- `wob deps doctor`: Checks for missing or uninstalled libraries.
-- Never silently installs dangerous or unrequested software.
-
-### 5. Environment Doctor (`wob doctor`)
-Inspects:
-- CPU Architecture (`aarch64`, `arm`, `x86_64`)
-- Android OS Release & API level
-- Termux version & storage permissions
-- Available disk storage and RAM
-- Toolchain: Java, Gradle, Android SDK, ADB, Node.js, npm, Python, PHP, Git, build tools
-- For every problem, explains what happened and provides a **practical, one-line fix**.
-
-### 6. Modular Framework Plugin System
-Extensible architecture where framework support lives in self-contained plugins:
-- `plugins/android`
-- `plugins/vite`
-- `plugins/react`
-- `plugins/vue`
-- `plugins/svelte`
-- `plugins/nextjs`
-- `plugins/python_web`
-- `plugins/php`
-- `plugins/static_web`
-- Custom user plugins in `~/.wobble/plugins/` are auto-discovered without touching Wobble core!
-
-### 7. AI Agent Support (`AI_GUIDE.md`)
-- `wob schema`: Emits full JSON-Schema specification of all CLI commands, capabilities, and environment metrics.
-- `--json`: Every inspection command supports clean, parseable JSON output.
-- Comprehensive [AI_GUIDE.md](AI_GUIDE.md) documents safety boundaries, memory rules, and workflows for autonomous coding agents.
+3. **APK Signing:**  
+   Debug APKs are signed automatically by Gradle's debug keystore. If you need to sign a custom or release APK:
+   ```bash
+   wob apk sign app-release.apk
+   ```
+   Wobble uses `apksigner` and generates a local keystore if none is provided.
 
 ---
 
-## Complete CLI Command Reference
+## Command Reference
 
 | Command | Description |
-|---------|-------------|
-| `wob doctor` | Run comprehensive environment health diagnostics |
-| `wob create android <name>` | Create a new native Android Gradle project |
-| `wob create web <name>` | Create a new web project (`--framework vite\|react\|vue\|svelte\|nextjs\|python\|php\|static`) |
-| `wob project list` | List all registered and detected projects in workspace |
-| `wob project info` | Show metadata, file counts, and size metrics for project |
-| `wob project open <name>` | Inspect project and view quick-action commands |
-| `wob android build` | Compile Android project into APK with Gradle |
-| `wob android clean` | Clean Gradle build caches |
-| `wob android limitations` | Honest documentation of Android OS constraints |
-| `wob web dev` | Launch framework development server |
-| `wob web build` | Build web project for production |
+|:---|:---|
+| `wob doctor` | Run comprehensive system diagnostics and get copy-paste fixes |
+| `wob create android <name> [-p pkg]` | Scaffold a native Android Gradle project |
+| `wob create web <name> [-f framework]` | Scaffold a web app (`vite`, `react`, `vue`, `svelte`, `nextjs`, `python`, `php`, `static`) |
+| `wob project list` | List all discovered and registered projects |
+| `wob project info` | Show project stats, file counts, and disk footprint |
+| `wob project open <name>` | View quick navigation shortcuts for a project |
+| `wob project remove <name>` | Unregister a project from the Wobble index |
+| `wob apk build [--release]` | Compile project into an APK with resource-safe Gradle settings |
+| `wob apk list` | Locate all generated APKs across the current workspace |
+| `wob apk info [file]` | Parse package ID, SDK targets, DEX, permissions, and SHA-256 |
+| `wob apk install [file] [--method auto\|termux-open\|am\|adb]` | Launch Android Package Installer prompt on-device |
+| `wob apk share [file]` | Copy APK to `~/storage/shared/Download` for easy phone access |
+| `wob apk sign [file]` | Sign an APK using `apksigner` |
+| `wob apk clean` | Delete generated APKs from build directories |
+| `wob web dev [-p port]` | Start framework development server |
+| `wob web build` | Build web application for production |
 | `wob web test` | Run project test suite |
-| `wob web preview` | Launch static preview server with Localhost and LAN IP |
-| `wob apk build` | Build APK for current project |
-| `wob apk list` | Locate all generated APKs |
-| `wob apk info [file]` | Inspect APK details (package, SDKs, DEX, permissions, SHA256) |
-| `wob apk install [file]` | Trigger Android package installation |
-| `wob apk clean` | Remove generated APK files |
-| `wob deps install [stack]` | Install project dependencies or global toolchain |
-| `wob deps add <pkg>` | Add dependency (`-m auto\|termux\|npm\|pip\|composer`) |
-| `wob deps remove <pkg>` | Remove dependency |
-| `wob deps doctor` | Check project dependencies health |
-| `wob plugin list` | List active framework plugins |
-| `wob plugin info <name>` | Inspect specific framework plugin |
-| `wob config list` | Show user configuration settings |
-| `wob schema` | Output machine-readable JSON schema for AI agents |
+| `wob web preview [-p port]` | Launch zero-dependency HTTP server with localhost and LAN URLs |
+| `wob deps install [stack]` | Install project dependencies or global toolchain stack (`android`, `node`, `python`, `php`) |
+| `wob deps add <pkg>` | Add package via detected package manager (`npm`, `pip`, `pkg`, `composer`) |
+| `wob deps remove <pkg>` | Remove a package |
+| `wob deps doctor` | Check for missing libraries (`node_modules`, `requirements.txt`, JDK) |
+| `wob deps list` | View declared project dependencies |
+| `wob plugin list` | List installed framework plugins |
+| `wob plugin info <name>` | Inspect plugin capabilities and prerequisite status |
+| `wob clean [--all]` | Clear build artifacts and caches |
+| `wob schema` | Dump machine-readable CLI schema for AI coding agents |
 
 ---
 
-## Android OS Reality & Security
+## Automation & AI Agents
 
-Wobble provides an honest development experience:
-1. **No Root Claim:** Non-root Android apps cannot silently install APKs in the background. Wobble dispatches a system `ACTION_VIEW` intent via `termux-open`, presenting Android's standard system installation dialog for user confirmation.
-2. **Process Memory Constraints:** Android terminates heavy background processes. Wobble configures Gradle with `--no-daemon` and `-Xmx1024m` to prevent OOM termination.
-3. **W^X Protection:** All code and toolchains reside strictly within Termux private data storage (`$PREFIX` and `$HOME`).
-4. **Dynamic Paths:** Never hardcodes `/data/data/...` paths; detects `$PREFIX` and environment variables dynamically for compatibility across Android ROMs and forks.
+If you're using Wobble with an automated script or an AI assistant (like Claude, Gemini, or aider running in Termux):
+
+- Pass `--json` to any command to get structured, parseable JSON output instead of colored terminal text.
+- Run `wob schema` to retrieve the complete JSON Schema specification of all commands, arguments, and host system metrics.
+- See [`AI_GUIDE.md`](AI_GUIDE.md) for agent memory guidelines and toolchain boundaries.
 
 ---
 
-## Testing
+## Running the Test Suite
 
-Wobble includes an automated test suite verifying CLI parsing, project scaffolding, framework detection, APK discovery, JSON outputs, and Termux compatibility:
+Wobble has a self-contained test suite that verifies argument parsing, scaffolding, framework detection, directory pruning, and APK discovery:
 
 ```bash
 python3 tests/run_tests.py
@@ -184,4 +196,4 @@ python3 tests/run_tests.py
 
 ## License
 
-Apache License 2.0. Open source and free for the Termux and Android development community.
+[Apache License 2.0](LICENSE). Free and open-source for the Termux and Android developer community.

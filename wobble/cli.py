@@ -19,15 +19,16 @@ from wobble.project.manager import (
     find_current_project,
     list_projects,
     get_project_info,
-    register_project
+    register_project,
+    unregister_project
 )
 from wobble.project.spec import ProjectSpec
 from wobble.plugins.loader import list_plugins, get_plugin, detect_plugin_for_path
 from wobble.android.manager import build_android, clean_android
-from wobble.android.apk import find_apks, inspect_apk, install_apk
+from wobble.android.apk import find_apks, inspect_apk, install_apk, share_apk, sign_apk
 from wobble.android.limitations import get_android_limitations_report
 from wobble.web.manager import run_web_dev, run_web_build, run_web_test, run_web_preview
-from wobble.deps.manager import deps_install, deps_add, deps_remove, deps_doctor
+from wobble.deps.manager import deps_install, deps_add, deps_remove, deps_doctor, deps_list
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -62,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_proj_info.add_argument("--path", help="Project root directory")
     p_proj_open = sp_project.add_parser("open", help="Inspect and display project quick-commands")
     p_proj_open.add_argument("name", help="Project name or directory")
+    p_proj_rm = sp_project.add_parser("remove", help="Unregister a project from registry")
+    p_proj_rm.add_argument("name", help="Project name to unregister")
 
     # 3. wob android
     p_android = subparsers.add_parser("android", help="Native Android development")
@@ -99,6 +102,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_apk_inst = sp_apk.add_parser("install", help="Safely install APK on Android (via termux-open, am, or adb)")
     p_apk_inst.add_argument("file", nargs="?", help="Path to APK file")
     p_apk_inst.add_argument("--method", choices=["auto", "termux-open", "am", "adb"], default="auto")
+    p_apk_share = sp_apk.add_parser("share", help="Export APK to Android Downloads/shared folder")
+    p_apk_share.add_argument("file", nargs="?", help="Path to APK file")
+    p_apk_share.add_argument("--dest", help="Destination folder (defaults to ~/storage/shared/Download)")
+    p_apk_sign = sp_apk.add_parser("sign", help="Sign APK using apksigner")
+    p_apk_sign.add_argument("file", nargs="?", help="Path to APK file")
+    p_apk_sign.add_argument("--keystore", help="Path to keystore file")
+    p_apk_sign.add_argument("--alias", help="Key alias")
     sp_apk.add_parser("clean", help="Remove generated APKs")
 
     # 6. wob deps
@@ -113,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_deps_rm.add_argument("package", help="Package name to remove")
     p_deps_rm.add_argument("-m", "--manager", choices=["auto", "termux", "npm", "pip", "composer"], default="auto")
     sp_deps.add_parser("doctor", help="Check dependencies health for project")
+    sp_deps.add_parser("list", help="List project dependencies")
 
     # 7. wob doctor
     subparsers.add_parser("doctor", help="Run comprehensive environment health diagnostics")
@@ -277,6 +288,15 @@ def handle_project(args) -> int:
                 print("  wob web preview")
             print()
         return 0
+
+    elif sub in ("remove", "unregister"):
+        name = args.name
+        unregister_project(name)
+        if logger.json_mode:
+            logger.json_output({"status": "unregistered", "project": name})
+        else:
+            logger.success(f"Project '{name}' removed from Wobble registry.")
+        return 0
     return 0
 
 
@@ -438,6 +458,50 @@ def handle_apk(args) -> int:
                 logger.error(f"Installation failed: {res.get('error')}")
         return 0 if res.get("success") else 1
 
+    elif sub == "share":
+        target_apk = Path(args.file) if args.file else None
+        if not target_apk:
+            found = find_apks(cwd)
+            if found:
+                target_apk = found[0]
+            else:
+                logger.error("No APK specified and none found in project.")
+                return 1
+
+        dest_dir = Path(args.dest) if getattr(args, "dest", None) else None
+        res = share_apk(target_apk, dest_dir=dest_dir)
+        if logger.json_mode:
+            logger.json_output(res)
+        else:
+            if res.get("success"):
+                logger.success(res.get("message"))
+                logger.detail("Destination", res.get("destination"))
+            else:
+                logger.error(f"Share failed: {res.get('error')}")
+        return 0 if res.get("success") else 1
+
+    elif sub == "sign":
+        target_apk = Path(args.file) if args.file else None
+        if not target_apk:
+            found = find_apks(cwd)
+            if found:
+                target_apk = found[0]
+            else:
+                logger.error("No APK specified and none found in project.")
+                return 1
+
+        ks = Path(args.keystore) if getattr(args, "keystore", None) else None
+        res = sign_apk(target_apk, keystore=ks, key_alias=getattr(args, "alias", None))
+        if logger.json_mode:
+            logger.json_output(res)
+        else:
+            if res.get("success"):
+                logger.success(res.get("message"))
+                logger.detail("Keystore", res.get("keystore"))
+            else:
+                logger.error(f"Sign failed: {res.get('error')}")
+        return 0 if res.get("success") else 1
+
     elif sub == "clean":
         apks = find_apks(cwd)
         removed = 0
@@ -489,6 +553,27 @@ def handle_deps(args) -> int:
                 for issue in res["issues"]:
                     get_logger().warn(issue["message"])
                     print(f"      Fix: {issue['fix']}")
+            print()
+        return 0
+
+    elif sub == "list":
+        res = deps_list(cwd)
+        if get_logger().json_mode:
+            get_logger().json_output(res)
+        else:
+            get_logger().heading(f"Dependencies: {res['project']}")
+            if res.get("dependencies"):
+                print("  Dependencies:")
+                for k, v in res["dependencies"].items():
+                    print(f"    - {k}: {v}")
+            if res.get("dev_dependencies"):
+                print("  Dev Dependencies:")
+                for k, v in res["dev_dependencies"].items():
+                    print(f"    - {k}: {v}")
+            if res.get("system"):
+                print("  System Packages:")
+                for s in res["system"]:
+                    print(f"    - {s}")
             print()
         return 0
     return 0

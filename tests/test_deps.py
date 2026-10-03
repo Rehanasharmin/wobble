@@ -7,7 +7,7 @@ import tempfile
 import shutil
 from pathlib import Path
 
-from wobble.deps.manager import resolve_package_manager, deps_doctor
+from wobble.deps.manager import resolve_package_manager, deps_doctor, deps_list
 
 
 class TestDeps(unittest.TestCase):
@@ -45,6 +45,14 @@ class TestDeps(unittest.TestCase):
         self.assertEqual(report["status"], "needs_attention")
         issue_types = [i["type"] for i in report["issues"]]
         self.assertIn("missing_node_modules", issue_types)
+
+    def test_deps_list(self):
+        import json
+        pkg_data = {"dependencies": {"react": "^18.0.0"}, "devDependencies": {"vite": "^5.0.0"}}
+        (self.test_path / "package.json").write_text(json.dumps(pkg_data))
+        res = deps_list(self.test_path)
+        self.assertEqual(res["dependencies"].get("react"), "^18.0.0")
+        self.assertEqual(res["dev_dependencies"].get("vite"), "^5.0.0")
 
 
 if __name__ == "__main__":

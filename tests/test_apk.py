@@ -8,7 +8,7 @@ import zipfile
 import shutil
 from pathlib import Path
 
-from wobble.android.apk import find_apks, inspect_apk, install_apk
+from wobble.android.apk import find_apks, inspect_apk, install_apk, share_apk, sign_apk
 
 
 class TestAPK(unittest.TestCase):
@@ -55,6 +55,28 @@ class TestAPK(unittest.TestCase):
         res = install_apk(fake_path)
         self.assertFalse(res["success"])
         self.assertIn("not found", res["error"])
+
+    def test_share_apk_to_custom_dest(self):
+        apk_file = self.test_path / "app-release.apk"
+        self._create_mock_apk(apk_file)
+        dest_dir = self.test_path / "downloads"
+        dest_dir.mkdir()
+
+        res = share_apk(apk_file, dest_dir=dest_dir)
+        self.assertTrue(res["success"])
+        self.assertTrue((dest_dir / "app-release.apk").exists())
+
+    def test_share_apk_nonexistent(self):
+        fake_path = self.test_path / "ghost.apk"
+        res = share_apk(fake_path)
+        self.assertFalse(res["success"])
+
+    def test_install_apk_invalid_method(self):
+        apk_file = self.test_path / "sample.apk"
+        self._create_mock_apk(apk_file)
+        res = install_apk(apk_file, method="unsupported_method_xyz")
+        self.assertFalse(res["success"])
+        self.assertIn("not available", res["error"])
 
 
 if __name__ == "__main__":

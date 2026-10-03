@@ -61,6 +61,31 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(args.subcommand, "info")
         self.assertEqual(args.file, "app-debug.apk")
 
+    def test_apk_share_parser(self):
+        args = self.parser.parse_args(["apk", "share", "app-debug.apk", "--dest", "/custom/path"])
+        self.assertEqual(args.command, "apk")
+        self.assertEqual(args.subcommand, "share")
+        self.assertEqual(args.file, "app-debug.apk")
+        self.assertEqual(args.dest, "/custom/path")
+
+    def test_apk_sign_parser(self):
+        args = self.parser.parse_args(["apk", "sign", "app.apk", "--keystore", "key.jks", "--alias", "mykey"])
+        self.assertEqual(args.command, "apk")
+        self.assertEqual(args.subcommand, "sign")
+        self.assertEqual(args.keystore, "key.jks")
+        self.assertEqual(args.alias, "mykey")
+
+    def test_project_remove_parser(self):
+        args = self.parser.parse_args(["project", "remove", "myoldapp"])
+        self.assertEqual(args.command, "project")
+        self.assertEqual(args.subcommand, "remove")
+        self.assertEqual(args.name, "myoldapp")
+
+    def test_deps_list_parser(self):
+        args = self.parser.parse_args(["deps", "list"])
+        self.assertEqual(args.command, "deps")
+        self.assertEqual(args.subcommand, "list")
+
 
 if __name__ == "__main__":
     unittest.main()

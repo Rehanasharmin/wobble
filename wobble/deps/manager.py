@@ -36,6 +36,28 @@ def resolve_package_manager(project_path: Path, requested_manager: str = "auto")
     return "termux"
 
 
+def _get_system_install_cmd(packages: List[str]) -> List[str]:
+    """Resolve system install command based on available package manager."""
+    if find_tool("pkg"):
+        return ["pkg", "install", "-y"] + packages
+    elif find_tool("apt-get"):
+        return ["apt-get", "install", "-y"] + packages
+    elif find_tool("apt"):
+        return ["apt", "install", "-y"] + packages
+    return ["pkg", "install", "-y"] + packages
+
+
+def _get_system_uninstall_cmd(package_name: str) -> List[str]:
+    """Resolve system uninstall command based on available package manager."""
+    if find_tool("pkg"):
+        return ["pkg", "uninstall", "-y", package_name]
+    elif find_tool("apt-get"):
+        return ["apt-get", "remove", "-y", package_name]
+    elif find_tool("apt"):
+        return ["apt", "remove", "-y", package_name]
+    return ["pkg", "uninstall", "-y", package_name]
+
+
 def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Install project dependencies or a predefined toolchain stack.
@@ -46,28 +68,28 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
 
     # Predefined toolchain stacks
     if target in ("android", "android-sdk", "android-toolchain"):
-        logger.heading("Installing Android Toolchain via Termux Package Manager")
+        logger.heading("Installing Android Toolchain via System Package Manager")
         pkgs = ["openjdk-17", "aapt", "apksigner", "zip", "unzip"]
-        logger.step(f"Termux packages to install: {', '.join(pkgs)}")
-        cmd = ["pkg", "install", "-y"] + pkgs
+        logger.step(f"System packages to install: {', '.join(pkgs)}")
+        cmd = _get_system_install_cmd(pkgs)
         exit_code = stream_command(cmd)
         return {"success": exit_code == 0, "target": target, "installed": pkgs}
 
     if target in ("node", "nodejs", "web"):
         logger.heading("Installing Node.js & Web Toolchain")
-        cmd = ["pkg", "install", "-y", "nodejs"]
+        cmd = _get_system_install_cmd(["nodejs"])
         exit_code = stream_command(cmd)
         return {"success": exit_code == 0, "target": target}
 
     if target in ("python", "python3"):
         logger.heading("Installing Python 3")
-        cmd = ["pkg", "install", "-y", "python"]
+        cmd = _get_system_install_cmd(["python"])
         exit_code = stream_command(cmd)
         return {"success": exit_code == 0, "target": target}
 
     if target in ("php",):
         logger.heading("Installing PHP")
-        cmd = ["pkg", "install", "-y", "php"]
+        cmd = _get_system_install_cmd(["php"])
         exit_code = stream_command(cmd)
         return {"success": exit_code == 0, "target": target}
 
@@ -117,7 +139,7 @@ def deps_add(package_name: str, manager: str = "auto", project_dir: Optional[Pat
     logger.info(f"Adding '{package_name}' via {resolved_mgr}...")
 
     if resolved_mgr == "termux":
-        cmd = ["pkg", "install", "-y", package_name]
+        cmd = _get_system_install_cmd([package_name])
     elif resolved_mgr == "npm":
         cmd = ["npm", "install", package_name]
     elif resolved_mgr == "pnpm":
@@ -150,7 +172,7 @@ def deps_remove(package_name: str, manager: str = "auto", project_dir: Optional[
     logger.info(f"Removing '{package_name}' via {resolved_mgr}...")
 
     if resolved_mgr == "termux":
-        cmd = ["pkg", "uninstall", "-y", package_name]
+        cmd = _get_system_uninstall_cmd(package_name)
     elif resolved_mgr in ("npm", "pnpm", "yarn"):
         cmd = [resolved_mgr, "remove", package_name]
     elif resolved_mgr == "pip":
@@ -210,3 +232,41 @@ def deps_doctor(project_dir: Optional[Path] = None) -> Dict[str, Any]:
 
     report["status"] = "ok" if len(report["issues"]) == 0 else "needs_attention"
     return report
+
+
+def deps_list(project_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """List declared dependencies for current project."""
+    import json
+    cwd = (project_dir or Path.cwd()).resolve()
+    spec = find_current_project(cwd)
+
+    result: Dict[str, Any] = {
+        "project": spec.name if spec else cwd.name,
+        "dependencies": {},
+        "dev_dependencies": {},
+        "system": []
+    }
+
+    pkg_json = cwd / "package.json"
+    if pkg_json.exists():
+        try:
+            with open(pkg_json, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                result["dependencies"] = data.get("dependencies", {})
+                result["dev_dependencies"] = data.get("devDependencies", {})
+        except Exception:
+            pass
+
+    req_txt = cwd / "requirements.txt"
+    if req_txt.exists():
+        try:
+            with open(req_txt, "r", encoding="utf-8") as f:
+                lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+                result["dependencies"]["pip"] = lines
+        except Exception:
+            pass
+
+    if spec and spec.dependencies:
+        result["system"] = spec.dependencies.get("system", [])
+
+    return result

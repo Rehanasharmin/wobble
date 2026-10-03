@@ -106,6 +106,12 @@ def get_cli_schema() -> Dict[str, Any]:
                         "arguments": [
                             {"name": "name", "type": "string", "required": True, "description": "Project name or path"}
                         ]
+                    },
+                    "remove": {
+                        "description": "Unregister a project from the registry",
+                        "arguments": [
+                            {"name": "name", "type": "string", "required": True, "description": "Project name to remove"}
+                        ]
                     }
                 }
             },
@@ -191,6 +197,25 @@ def get_cli_schema() -> Dict[str, Any]:
                             {"name": "--method", "type": "string", "choices": ["auto", "termux-open", "am", "adb"], "default": "auto", "description": "Installation mechanism"}
                         ]
                     },
+                    "share": {
+                        "description": "Export APK to Android shared storage / Downloads folder for easy access in Android Files app",
+                        "arguments": [
+                            {"name": "file", "type": "string", "required": False, "description": "Path to .apk file"}
+                        ],
+                        "flags": [
+                            {"name": "--dest", "type": "string", "description": "Destination directory path"}
+                        ]
+                    },
+                    "sign": {
+                        "description": "Sign APK using apksigner and debug or user keystore",
+                        "arguments": [
+                            {"name": "file", "type": "string", "required": False, "description": "Path to .apk file"}
+                        ],
+                        "flags": [
+                            {"name": "--keystore", "type": "string", "description": "Path to keystore file"},
+                            {"name": "--alias", "type": "string", "description": "Key alias"}
+                        ]
+                    },
                     "clean": {
                         "description": "Remove all generated APK files in the project"
                     }
@@ -225,6 +250,9 @@ def get_cli_schema() -> Dict[str, Any]:
                     },
                     "doctor": {
                         "description": "Check for missing or broken dependencies for the current project or global toolchain"
+                    },
+                    "list": {
+                        "description": "List declared project dependencies and system packages"
                     }
                 }
             },

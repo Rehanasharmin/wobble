@@ -41,9 +41,19 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=serve_dir, **kwargs)
 
+        def do_GET(self):
+            # SPA Fallback: if requesting a route that doesn't exist on disk and has no extension, serve index.html
+            req_path = self.path.split("?")[0].split("#")[0]
+            local_target = Path(serve_dir) / req_path.lstrip("/")
+            if not local_target.exists() and "." not in Path(req_path).name:
+                index_fallback = Path(serve_dir) / "index.html"
+                if index_fallback.is_file():
+                    self.path = "/index.html"
+            return super().do_GET()
+
         def log_message(self, format, *args):
-            # Clean minimal request logging
-            sys.stdout.write(f"  [Preview] {self.address_string()} - {args[0]}\n")
+            if not logger.json_mode:
+                sys.stdout.write(f"  [Preview] {self.address_string()} - {args[0]}\n")
 
     # Allow socket reuse to prevent port-in-use errors on quick restart
     socketserver.TCPServer.allow_reuse_address = True

@@ -1,4 +1,4 @@
-#!/data/data/com.termux/files/usr/bin/sh
+#!/usr/bin/env sh
 # Wobble Uninstaller
 # Safely removes Wobble executables and global configuration without deleting user projects.
 
