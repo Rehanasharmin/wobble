@@ -13,6 +13,7 @@ Wobble CLI Entrypoint (`bin/wob`)
     │     ├── Environment Doctor (`wobble/core/doctor.py`)
     │     ├── Machine Schema (`wobble/core/schema.py`)
     │     ├── Safe Executor (`wobble/core/executor.py`)
+    │     ├── Atomic File Utilities (`wobble/core/fsutil.py`)
     │     └── Structured Logger / JSON Formatter (`wobble/core/logger.py`)
     │
     ├─► Project Management (`wobble/project/`)

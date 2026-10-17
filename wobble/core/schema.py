@@ -296,12 +296,19 @@ def get_cli_schema() -> Dict[str, Any]:
             "clean": {
                 "description": "Clean temporary files, build caches, and node_modules / gradle caches across projects",
                 "flags": [
-                    {"name": "--all", "type": "boolean", "default": False, "description": "Deep clean including node_modules and Gradle cache"}
+                    {"name": "--all", "type": "boolean", "default": False, "description": "Deep clean including node_modules and Gradle cache"},
+                    {"name": "--yes", "type": "boolean", "default": False, "description": "Skip confirmation prompt for destructive cleaning"}
                 ]
             },
             "schema": {
                 "description": "Print this machine-readable schema for AI coding agent orchestration",
                 "flags": []
+            },
+            "completion": {
+                "description": "Generate a shell completion script for bash or zsh",
+                "arguments": [
+                    {"name": "shell", "type": "string", "required": False, "choices": ["bash", "zsh"], "default": "bash", "description": "Shell to generate a completion script for"}
+                ]
             }
         },
         "capabilities": {

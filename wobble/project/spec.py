@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from wobble import __version__
+from wobble.core.fsutil import atomic_write_json
 
 PROJECT_SPEC_FILENAME = "wobble.json"
 
@@ -59,9 +60,7 @@ class ProjectSpec:
 
     def save(self, filepath: Optional[Path] = None):
         target = filepath or (self.path / PROJECT_SPEC_FILENAME)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        atomic_write_json(target, self.to_dict())
 
     @classmethod
     def load_from_dir(cls, directory: Path) -> Optional["ProjectSpec"]:

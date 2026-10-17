@@ -136,10 +136,14 @@ def run_command(
             )
             return ExecutionResult(cmd, proc.returncode, "", "")
     except subprocess.TimeoutExpired as e:
+        # TimeoutExpired payloads may be str or bytes depending on Python version
+        partial_out = e.stdout or ""
+        if isinstance(partial_out, bytes):
+            partial_out = partial_out.decode("utf-8", errors="replace")
         return ExecutionResult(
             command=cmd,
             returncode=124,
-            stdout=e.stdout or "" if isinstance(e.stdout, str) else "",
+            stdout=partial_out,
             stderr=f"Command timed out after {timeout} seconds"
         )
     except PermissionError as e:
@@ -193,6 +197,15 @@ def stream_command(
         )
         return proc.wait()
     except KeyboardInterrupt:
+        # Make sure the child does not keep running detached after Ctrl+C
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         print("\nProcess interrupted by user.")
         return 130
     except Exception as e:
