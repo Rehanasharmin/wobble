@@ -8,6 +8,7 @@ import sys
 import platform
 import shutil
 import socket
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -64,8 +65,13 @@ def get_architecture() -> str:
     return raw
 
 
+@lru_cache(maxsize=64)
 def get_android_property(prop_name: str) -> Optional[str]:
-    """Read an Android system property via /system/bin/getprop or build.prop without shell parsing."""
+    """Read an Android system property via /system/bin/getprop or build.prop without shell parsing.
+
+    Results are cached per process because each lookup may spawn a getprop
+    subprocess and property values cannot change while a Wobble command runs.
+    """
     getprop_bin = shutil.which("getprop") or "/system/bin/getprop"
     if os.path.exists(getprop_bin):
         try:
@@ -182,27 +188,28 @@ def get_memory_info() -> Dict[str, Any]:
         return {"error": str(e), "available_human": "Unknown", "percent_used": 0}
 
 
+@lru_cache(maxsize=1)
 def get_lan_ip() -> str:
     """
     Detect the device's local LAN IP address dynamically.
     Uses a UDP socket trick without making any outbound network calls.
-    Falls back to 127.0.0.1 if offline.
+    Falls back to 127.0.0.1 if offline. The result is cached for the process
+    lifetime since network interfaces rarely change mid-command.
     """
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # Does not actually initiate a connection; used to query routing table for outbound interface
-        s.connect(("10.255.255.255", 1))
-        ip = s.getsockname()[0]
-    except Exception:
+    for remote in (("10.255.255.255", 1), ("8.8.8.8", 80)):
+        # A fresh socket per attempt keeps failed connects from poisoning later tries.
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            # Fallback attempt with Google DNS
-            s.connect(("8.8.8.8", 80))
+            # Does not actually initiate a connection; used to query routing table for outbound interface
+            s.connect(remote)
             ip = s.getsockname()[0]
-        except Exception:
-            ip = "127.0.0.1"
-    finally:
-        s.close()
-    return ip
+            if ip and not ip.startswith("0."):
+                return ip
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return "127.0.0.1"
 
 
 def find_tool(name: str) -> Optional[str]:

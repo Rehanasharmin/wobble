@@ -6,9 +6,11 @@ and provides practical, actionable fixes for every detected issue.
 
 import os
 import sys
+import time
 import shutil
 import platform
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -71,6 +73,34 @@ def check_tool_version(cmd: List[str], version_flag: str = "--version", timeout:
     except Exception:
         pass
     return False, ""
+
+
+def check_tools_parallel(checks: Dict[str, Tuple[Optional[str], str]]) -> Dict[str, Tuple[bool, str]]:
+    """
+    Probe multiple tools concurrently. Each check spawns a subprocess, so
+    running them in parallel cuts doctor wall-time significantly on phones
+    where process creation is slow. Returns {label: (ok, version_line)}.
+    """
+    results: Dict[str, Tuple[bool, str]] = {}
+    runnable = {label: spec for label, spec in checks.items() if spec[0]}
+
+    if runnable:
+        # Small pool: version probes are short-lived and mobile CPUs are modest
+        with ThreadPoolExecutor(max_workers=min(8, len(runnable))) as pool:
+            futures = {
+                label: pool.submit(check_tool_version, [spec[0]], spec[1])
+                for label, spec in runnable.items()
+            }
+            for label, fut in futures.items():
+                try:
+                    results[label] = fut.result(timeout=15)
+                except Exception:
+                    results[label] = (False, "")
+
+    for label, spec in checks.items():
+        if label not in results:
+            results[label] = (False, "")
+    return results
 
 
 def inspect_environment() -> List[CheckResult]:
@@ -184,16 +214,39 @@ def inspect_environment() -> List[CheckResult]:
         fix="Run 'termux-setup-storage' in Termux and grant permission." if not storage_dir.exists() else None
     ))
 
-    # 4. Core Development Tools
-    # Git
+    # 4. Core Development Tools & Android Toolchain
+    # Resolve binaries first (cheap PATH lookups), then probe versions in parallel
     git_bin = find_tool("git")
+    py_bin = find_tool("python3") or find_tool("python")
+    node_bin = find_tool("node")
+    npm_bin = find_tool("npm")
+    php_bin = find_tool("php")
+    java_bin = find_tool("java")
+    javac_bin = find_tool("javac")
+    gradle_bin = find_tool("gradle")
+    adb_bin = find_tool("adb")
+
+    versions = check_tools_parallel({
+        "git": (git_bin, "--version"),
+        "python": (py_bin, "--version"),
+        "node": (node_bin, "--version"),
+        "npm": (npm_bin, "--version"),
+        "php": (php_bin, "--version"),
+        "java": (java_bin, "-version"),
+        "gradle": (gradle_bin, "--version"),
+        "adb": (adb_bin, "version"),
+    })
+
+    # Git
     if git_bin:
-        ok, v = check_tool_version([git_bin], "--version")
+        ok, v = versions["git"]
         results.append(CheckResult(
             name="Git",
             category="Dev Tools",
-            status="ok",
-            details=v or git_bin
+            status="ok" if ok else "warning",
+            details=v or git_bin,
+            problem=None if ok else "Git found but did not report a version.",
+            fix=None if ok else "Reinstall Git with: pkg install -y git"
         ))
     else:
         results.append(CheckResult(
@@ -206,9 +259,8 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     # Python
-    py_bin = find_tool("python3") or find_tool("python")
     if py_bin:
-        ok, v = check_tool_version([py_bin], "--version")
+        ok, v = versions["python"]
         results.append(CheckResult(
             name="Python",
             category="Dev Tools",
@@ -226,10 +278,8 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     # Node.js
-    node_bin = find_tool("node")
-    npm_bin = find_tool("npm")
     if node_bin:
-        ok, v = check_tool_version([node_bin], "--version")
+        ok, v = versions["node"]
         results.append(CheckResult(
             name="Node.js",
             category="Web Tools",
@@ -247,7 +297,7 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     if npm_bin:
-        ok, v = check_tool_version([npm_bin], "--version")
+        ok, v = versions["npm"]
         results.append(CheckResult(
             name="npm",
             category="Web Tools",
@@ -265,14 +315,13 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     # PHP
-    php_bin = find_tool("php")
     if php_bin:
-        ok, v = check_tool_version([php_bin], "--version")
+        ok, v = versions["php"]
         results.append(CheckResult(
             name="PHP",
             category="Web Tools",
             status="ok",
-            details=v.splitlines()[0] if v else php_bin
+            details=(v.splitlines()[0] if v else php_bin)
         ))
     else:
         results.append(CheckResult(
@@ -286,10 +335,8 @@ def inspect_environment() -> List[CheckResult]:
 
     # 5. Android Development Toolchain
     # Java / JDK
-    java_bin = find_tool("java")
-    javac_bin = find_tool("javac")
     if java_bin:
-        ok, v = check_tool_version([java_bin], "-version")
+        ok, v = versions["java"]
         jdk_details = v or java_bin
         if javac_bin:
             jdk_details += " (JDK compiler present)"
@@ -312,9 +359,8 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     # Gradle
-    gradle_bin = find_tool("gradle")
     if gradle_bin:
-        ok, v = check_tool_version([gradle_bin], "--version")
+        ok, v = versions["gradle"]
         results.append(CheckResult(
             name="Gradle",
             category="Android Toolchain",
@@ -399,9 +445,8 @@ def inspect_environment() -> List[CheckResult]:
         ))
 
     # ADB (Android Debug Bridge)
-    adb_bin = find_tool("adb")
     if adb_bin:
-        ok, v = check_tool_version([adb_bin], "version")
+        ok, v = versions["adb"]
         results.append(CheckResult(
             name="ADB (Android Debug Bridge)",
             category="Android Toolchain",
@@ -423,7 +468,9 @@ def inspect_environment() -> List[CheckResult]:
 
 def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
     """Run doctor and render output or return JSON dictionary."""
+    started = time.monotonic()
     results = inspect_environment()
+    elapsed = round(time.monotonic() - started, 2)
 
     counts = {"ok": 0, "warning": 0, "missing": 0, "error": 0}
     for r in results:
@@ -433,7 +480,8 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
         "status": "healthy" if counts["missing"] == 0 and counts["error"] == 0 else "needs_attention",
         "counts": counts,
         "checks": [r.to_dict() for r in results],
-        "lan_ip": get_lan_ip()
+        "lan_ip": get_lan_ip(),
+        "elapsed_seconds": elapsed
     }
 
     if json_mode:
@@ -470,7 +518,8 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
     print("\n" + "-" * 58)
     print(f"Summary: \033[32m{counts['ok']} Passed\033[0m | "
           f"\033[33m{counts['warning']} Warnings\033[0m | "
-          f"\033[31m{counts['missing']} Missing\033[0m")
+          f"\033[31m{counts['missing']} Missing\033[0m | "
+          f"Scanned in {elapsed}s")
 
     if counts["missing"] > 0 or counts["warning"] > 0:
         print("\n\033[1mQuick Fix Recommendations:\033[0m")

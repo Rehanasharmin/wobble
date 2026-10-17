@@ -5,30 +5,18 @@ Entry point for all 'wob' subcommands, options, and structured JSON outputs.
 
 import sys
 import os
+import time
+import difflib
 import argparse
 from pathlib import Path
 from typing import List, Optional
 
 from wobble import __version__
 from wobble.core.logger import Logger, set_logger, get_logger
-from wobble.core.context import get_prefix, get_home
-from wobble.core.config import get_config
-from wobble.core.doctor import run_doctor
-from wobble.core.schema import get_cli_schema
-from wobble.project.manager import (
-    find_current_project,
-    list_projects,
-    get_project_info,
-    register_project,
-    unregister_project
-)
-from wobble.project.spec import ProjectSpec
-from wobble.plugins.loader import list_plugins, get_plugin, detect_plugin_for_path
-from wobble.android.manager import build_android, clean_android
-from wobble.android.apk import find_apks, inspect_apk, install_apk, share_apk, sign_apk
-from wobble.android.limitations import get_android_limitations_report
-from wobble.web.manager import run_web_dev, run_web_build, run_web_test, run_web_preview
-from wobble.deps.manager import deps_install, deps_add, deps_remove, deps_doctor, deps_list
+
+# NOTE: heavyweight subcommand modules (doctor, apk, web, deps, plugins) are
+# imported lazily inside their handlers. This keeps 'wob --version' and other
+# trivial commands fast on mobile CPUs where import time is noticeable.
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,7 +24,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="wob",
         description="⚡ Wobble - Production-Ready Termux Development Harness",
-        epilog="Turn Termux into a unified Android & Web development workstation."
+        epilog="""examples:
+  wob doctor                        check the environment before building
+  wob create android myapp          scaffold a native Android project
+  wob create web site -f react      scaffold a React web project
+  wob apk build && wob apk install  build and install a debug APK
+  wob web preview                   serve a project on localhost & LAN
+  wob --json project list           machine-readable output for scripts
+
+Turn Termux into a unified Android & Web development workstation.""",
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
     parser.add_argument("--version", action="version", version=f"Wobble v{__version__}")
@@ -148,12 +145,17 @@ def build_parser() -> argparse.ArgumentParser:
     # 10. wob clean
     p_clean = subparsers.add_parser("clean", help="Clean temporary caches and build files")
     p_clean.add_argument("--all", action="store_true", help="Deep clean including node_modules and Gradle cache")
+    p_clean.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt for destructive cleaning")
 
     # 11. wob update
     subparsers.add_parser("update", help="Check for Wobble updates")
 
     # 12. wob schema
     subparsers.add_parser("schema", help="Output machine-readable CLI schema for AI agents")
+
+    # 13. wob completion
+    p_compl = subparsers.add_parser("completion", help="Generate shell completion script (bash or zsh)")
+    p_compl.add_argument("shell", nargs="?", default="bash", choices=["bash", "zsh"], help="Shell to generate a script for")
 
     # Shortcuts
     p_build = subparsers.add_parser("build", help="Intelligent build for current project")
@@ -168,15 +170,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _suggest_names(unknown: str, candidates) -> str:
+    """Return a friendly 'Did you mean ...?' hint for mistyped names."""
+    matches = difflib.get_close_matches(unknown, list(candidates), n=3, cutoff=0.5)
+    if matches:
+        return f" Did you mean: {', '.join(matches)}?"
+    return ""
+
+
 def handle_create(args) -> int:
+    from wobble.plugins.loader import get_plugin, list_plugins
+    from wobble.project.manager import register_project
+
     logger = get_logger()
     p_type = args.type
     name = args.name
+
+    # Guard against names that would escape the target directory or break tooling
+    if name in (".", "..") or any(sep in name for sep in ("/", "\\")) or name.startswith("."):
+        logger.error(f"Invalid project name '{name}'. Use a plain folder name without path separators.")
+        return 1
+
     target_dir = Path(args.dir) if args.dir else (Path.cwd() / name)
 
-    if target_dir.exists() and any(target_dir.iterdir()):
-        logger.error(f"Target directory '{target_dir}' already exists and is not empty.")
-        return 1
+    if target_dir.exists():
+        try:
+            non_empty = any(target_dir.iterdir())
+        except OSError as e:
+            logger.error(f"Cannot inspect target directory '{target_dir}': {e}")
+            return 1
+        if non_empty:
+            logger.error(f"Target directory '{target_dir}' already exists and is not empty.")
+            return 1
 
     framework = args.framework
     if framework == "auto":
@@ -190,7 +215,11 @@ def handle_create(args) -> int:
             plugin = get_plugin("android")
 
     if not plugin:
-        logger.error(f"No plugin found for framework '{framework}'. Run 'wob plugin list' to see available frameworks.")
+        available = [p.name for p in list_plugins()]
+        logger.error(
+            f"No plugin found for framework '{framework}'. "
+            f"Run 'wob plugin list' to see available frameworks.{_suggest_names(framework, available)}"
+        )
         return 1
 
     logger.heading(f"Creating new {p_type.capitalize()} project: {name}")
@@ -224,6 +253,13 @@ def handle_create(args) -> int:
 
 
 def handle_project(args) -> int:
+    from wobble.project.manager import (
+        find_current_project,
+        list_projects,
+        get_project_info,
+        unregister_project
+    )
+
     logger = get_logger()
     sub = args.subcommand or "list"
 
@@ -301,14 +337,24 @@ def handle_project(args) -> int:
 
 
 def handle_android(args) -> int:
+    import time as _time
+    from wobble.project.manager import find_current_project
+    from wobble.android.manager import build_android, clean_android
+    from wobble.android.apk import find_apks
+    from wobble.android.limitations import get_android_limitations_report
+
     logger = get_logger()
     sub = args.subcommand or "info"
     cwd = Path.cwd()
 
     if sub == "build":
+        started = _time.monotonic()
         res = build_android(cwd, release=args.release, clean=args.clean)
+        res["elapsed_seconds"] = round(_time.monotonic() - started, 1)
         if logger.json_mode:
             logger.json_output(res)
+        elif res.get("success"):
+            logger.detail("Build time", f"{res['elapsed_seconds']}s")
         return 0 if res.get("success") else 1
 
     elif sub == "clean":
@@ -359,15 +405,22 @@ def handle_android(args) -> int:
 
 
 def handle_web(args) -> int:
+    import time as _time
+    from wobble.web.manager import run_web_dev, run_web_build, run_web_test, run_web_preview
+
     sub = args.subcommand or "preview"
     cwd = Path.cwd()
 
     if sub == "dev":
         return run_web_dev(cwd, port=args.port, host=args.host)
     elif sub == "build":
+        started = _time.monotonic()
         res = run_web_build(cwd)
+        res["elapsed_seconds"] = round(_time.monotonic() - started, 1)
         if get_logger().json_mode:
             get_logger().json_output(res)
+        elif res.get("success"):
+            get_logger().detail("Build time", f"{res['elapsed_seconds']}s")
         return 0 if res.get("success") else 1
     elif sub == "test":
         res = run_web_test(cwd)
@@ -384,14 +437,22 @@ def handle_web(args) -> int:
 
 
 def handle_apk(args) -> int:
+    import time as _time
+    from wobble.android.manager import build_android
+    from wobble.android.apk import find_apks, inspect_apk, install_apk, share_apk, sign_apk
+
     logger = get_logger()
     sub = args.subcommand or "list"
     cwd = Path.cwd()
 
     if sub == "build":
+        started = _time.monotonic()
         res = build_android(cwd, release=args.release)
+        res["elapsed_seconds"] = round(_time.monotonic() - started, 1)
         if logger.json_mode:
             logger.json_output(res)
+        elif res.get("success"):
+            logger.detail("Build time", f"{res['elapsed_seconds']}s")
         return 0 if res.get("success") else 1
 
     elif sub == "list":
@@ -520,6 +581,8 @@ def handle_apk(args) -> int:
 
 
 def handle_deps(args) -> int:
+    from wobble.deps.manager import deps_install, deps_add, deps_remove, deps_doctor, deps_list
+
     sub = args.subcommand or "doctor"
     cwd = Path.cwd()
 
@@ -580,6 +643,8 @@ def handle_deps(args) -> int:
 
 
 def handle_plugin(args) -> int:
+    from wobble.plugins.loader import list_plugins, get_plugin
+
     logger = get_logger()
     sub = args.subcommand or "list"
 
@@ -598,7 +663,8 @@ def handle_plugin(args) -> int:
     elif sub == "info":
         p = get_plugin(args.name)
         if not p:
-            logger.error(f"Plugin '{args.name}' not found.")
+            available = [pl.name for pl in list_plugins()]
+            logger.error(f"Plugin '{args.name}' not found.{_suggest_names(args.name, available)}")
             return 1
         if logger.json_mode:
             logger.json_output(p.to_dict())
@@ -617,6 +683,8 @@ def handle_plugin(args) -> int:
 
 
 def handle_config(args) -> int:
+    from wobble.core.config import get_config, DEFAULT_CONFIG
+
     logger = get_logger()
     cfg = get_config()
     sub = args.subcommand or "list"
@@ -638,12 +706,190 @@ def handle_config(args) -> int:
             print(f"{args.key} = {val}")
         return 0
     elif sub == "set":
+        if args.key not in DEFAULT_CONFIG:
+            logger.warn(
+                f"'{args.key}' is not a standard setting.{_suggest_names(args.key, DEFAULT_CONFIG.keys())}"
+            )
         cfg.set(args.key, args.value)
         if logger.json_mode:
             logger.json_output({"status": "updated", args.key: args.value})
         else:
             logger.success(f"Config '{args.key}' set to '{args.value}'")
         return 0
+    return 0
+
+
+def handle_clean(args) -> int:
+    """Remove build artifacts and caches; --all also drops heavyweight dependencies."""
+    import shutil
+
+    logger = get_logger()
+    cwd = Path.cwd()
+
+    artifact_dirs = {"build", "dist", "out", ".vite", "__pycache__", ".pytest_cache", ".next", "coverage"}
+    deep_dirs = {"node_modules", ".gradle", ".venv", ".tox"}
+    deep = bool(getattr(args, "all", False))
+
+    targets: List[Path] = []
+    skip_walk = {".git", ".wobble"}
+    if not deep:
+        skip_walk |= deep_dirs
+
+    for dirpath, dirnames, filenames in os.walk(cwd):
+        dirnames[:] = [d for d in dirnames if d not in skip_walk]
+        for d in list(dirnames):
+            if d in artifact_dirs or (deep and d in deep_dirs):
+                targets.append(Path(dirpath) / d)
+                dirnames.remove(d)  # don't descend into what we delete
+        for f in filenames:
+            if f.endswith(".apk"):
+                targets.append(Path(dirpath) / f)
+
+    if not targets:
+        if logger.json_mode:
+            logger.json_output({"removed": 0, "status": "already clean"})
+        else:
+            logger.success("Nothing to clean. Workspace is already tidy.")
+        return 0
+
+    # Deep cleans destroy dependencies and long build caches: confirm on interactive terminals
+    if deep and not getattr(args, "yes", False) and not logger.json_mode and sys.stdin.isatty():
+        logger.warn(f"Deep clean will permanently delete {len(targets)} item(s), including node_modules / Gradle caches:")
+        for t in targets[:8]:
+            logger.detail("will remove", str(t.relative_to(cwd)))
+        if len(targets) > 8:
+            logger.detail("...", f"and {len(targets) - 8} more")
+        try:
+            answer = input("Continue? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            logger.info("Clean cancelled.")
+            return 0
+
+    removed = 0
+    freed = 0
+    for t in targets:
+        try:
+            if t.is_file():
+                freed += t.stat().st_size
+                t.unlink()
+            elif t.is_dir():
+                for dirpath, dirnames, filenames in os.walk(t):
+                    for f in filenames:
+                        try:
+                            freed += (Path(dirpath) / f).stat().st_size
+                        except OSError:
+                            pass
+                shutil.rmtree(t, ignore_errors=True)
+            removed += 1
+        except OSError:
+            pass
+
+    if logger.json_mode:
+        logger.json_output({"removed": removed, "freed_bytes": freed})
+    else:
+        logger.success(f"Removed {removed} item(s), freeing {round(freed / (1024 * 1024), 1)} MB.")
+    return 0
+
+
+_COMPLETION_BASH = """\
+# Wobble (wob) bash completion — install with:
+#   wob completion bash > ~/.local/share/bash-completion/completions/wob
+# or:  source <(wob completion bash)
+_wob_completions() {
+    local cur prev cmds subcmds
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    cmds="create project android web apk deps doctor plugin config clean update schema completion build dev preview"
+
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
+        return 0
+    fi
+
+    case "${COMP_WORDS[1]}" in
+        create)   subcmds="android web" ;;
+        project)  subcmds="list info open remove" ;;
+        android)  subcmds="build clean info limitations" ;;
+        web)      subcmds="dev build test preview serve" ;;
+        apk)      subcmds="build list info install share sign clean" ;;
+        deps)     subcmds="install add remove doctor list" ;;
+        plugin)   subcmds="list info" ;;
+        config)   subcmds="list get set" ;;
+        completion) subcmds="bash zsh" ;;
+        *)        subcmds="" ;;
+    esac
+
+    if [ "$COMP_CWORD" -eq 2 ] && [ -n "$subcmds" ]; then
+        COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
+        return 0
+    fi
+
+    case "$prev" in
+        -f|--framework) COMPREPLY=( $(compgen -W "vite react vue svelte nextjs python php static" -- "$cur") ) ;;
+        --method)       COMPREPLY=( $(compgen -W "auto termux-open am adb" -- "$cur") ) ;;
+        -m|--manager)   COMPREPLY=( $(compgen -W "auto termux npm pip composer" -- "$cur") ) ;;
+        -p|--port|--host|--package|--dir|--dest|--keystore|--alias|--path|--release|--all|--yes)
+                        COMPREPLY=( $(compgen -f -- "$cur") ) ;;
+    esac
+}
+complete -F _wob_completions wob
+"""
+
+_COMPLETION_ZSH = """\
+#compdef wob
+# Wobble (wob) zsh completion — install with:
+#   wob completion zsh > "${fpath[1]}/_wob"
+_wob() {
+    local -a cmds
+    cmds=(
+        'create:Create a new Android or Web project'
+        'project:Manage and inspect projects'
+        'android:Native Android development'
+        'web:Web development workflows'
+        'apk:Locate, inspect, build, and install APKs'
+        'deps:Unified package and dependency management'
+        'doctor:Run comprehensive environment health diagnostics'
+        'plugin:List and inspect framework plugins'
+        'config:Manage persistent user configuration'
+        'clean:Clean temporary caches and build files'
+        'update:Check for Wobble updates'
+        'schema:Output machine-readable CLI schema'
+        'completion:Generate shell completion script'
+        'build:Intelligent build for current project'
+        'dev:Start dev server for current project'
+        'preview:Preview current project locally and on LAN'
+    )
+    if (( CURRENT == 2 )); then
+        _describe 'command' cmds
+        return
+    fi
+    case "${words[2]}" in
+        create)   _values 'type' android web ;;
+        project)  _values 'subcommand' list info open remove ;;
+        android)  _values 'subcommand' build clean info limitations ;;
+        web)      _values 'subcommand' dev build test preview serve ;;
+        apk)      _values 'subcommand' build list info install share sign clean ;;
+        deps)     _values 'subcommand' install add remove doctor list ;;
+        plugin)   _values 'subcommand' list info ;;
+        config)   _values 'subcommand' list get set ;;
+        completion) _values 'shell' bash zsh ;;
+    esac
+}
+_wob "$@"
+"""
+
+
+def handle_completion(args) -> int:
+    logger = get_logger()
+    shell = getattr(args, "shell", "bash") or "bash"
+    script = _COMPLETION_BASH if shell == "bash" else _COMPLETION_ZSH
+    if logger.json_mode:
+        logger.json_output({"shell": shell, "script": script})
+    else:
+        print(script)
     return 0
 
 
@@ -657,33 +903,55 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if not args.command:
         parser.print_help()
+        if not logger.json_mode:
+            print("\nNew here? Try:  wob doctor  →  wob create web demo  →  wob web preview")
         return 0
 
+    try:
+        return _dispatch(parser, args)
+    except KeyboardInterrupt:
+        if not logger.json_mode:
+            print("\nInterrupted.")
+        return 130
+    except BrokenPipeError:
+        # Allow piping into head/tail without a scary traceback
+        try:
+            sys.stdout.close()
+        except Exception:
+            pass
+        return 0
+    except Exception as e:
+        if getattr(args, "verbose", False):
+            import traceback
+            traceback.print_exc()
+        logger.error(f"Unexpected error: {e}")
+        logger.info("Run with --verbose for a full traceback, or 'wob doctor' to check your environment.")
+        return 1
+
+
+def _dispatch(parser: argparse.ArgumentParser, args) -> int:
+    """Route a parsed command to its handler. Heavy modules load only when needed."""
+    logger = get_logger()
     cmd = args.command
 
     # Top-level commands
     if cmd == "doctor":
+        from wobble.core.doctor import run_doctor
         run_doctor(json_mode=args.json)
         return 0
 
     elif cmd == "schema":
-        schema_data = get_cli_schema()
+        from wobble.core.schema import get_cli_schema
         import json
+        schema_data = get_cli_schema()
         print(json.dumps(schema_data, indent=2))
         return 0
 
+    elif cmd == "completion":
+        return handle_completion(args)
+
     elif cmd == "clean":
-        logger.info("Cleaning temporary files across current workspace...")
-        # Clean APKs if Android
-        cwd = Path.cwd()
-        for p in cwd.rglob("*.apk"):
-            if ".gradle" not in p.parts:
-                try:
-                    p.unlink()
-                except Exception:
-                    pass
-        logger.success("Workspace cleaned.")
-        return 0
+        return handle_clean(args)
 
     elif cmd == "update":
         logger.info(f"Wobble is currently at latest version v{__version__}.")
@@ -691,18 +959,23 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Smart shortcuts
     elif cmd == "build":
+        from wobble.project.manager import find_current_project
         spec = find_current_project()
         if spec and spec.project_type == "android":
+            from wobble.android.manager import build_android
             res = build_android(Path.cwd(), release=args.release)
             return 0 if res.get("success") else 1
         else:
+            from wobble.web.manager import run_web_build
             res = run_web_build(Path.cwd())
             return 0 if res.get("success") else 1
 
     elif cmd == "dev":
+        from wobble.web.manager import run_web_dev
         return run_web_dev(Path.cwd(), port=args.port)
 
     elif cmd == "preview":
+        from wobble.web.manager import run_web_preview
         run_web_preview(Path.cwd(), port=args.port)
         return 0
 

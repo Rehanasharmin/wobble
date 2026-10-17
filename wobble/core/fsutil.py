@@ -1,0 +1,59 @@
+"""
+Wobble Filesystem Utilities
+Crash-safe atomic file writes that prevent corrupted JSON/config files when a
+process is interrupted mid-write (common on mobile devices with aggressive
+process killers).
+"""
+
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any, Union
+
+
+def atomic_write_text(target: Union[str, Path], content: str, encoding: str = "utf-8") -> None:
+    """
+    Write text to target atomically: data goes to a temporary file in the same
+    directory first, then is renamed over the destination. A crash mid-write can
+    therefore never leave a half-written target file.
+    """
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_name, target)
+    except Exception:
+        # Never leave stray temp files behind on failure
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(target: Union[str, Path], data: Any, indent: int = 2) -> None:
+    """Serialize data as JSON and write it to target atomically."""
+    atomic_write_text(target, json.dumps(data, indent=indent, default=str) + "\n")
+
+
+def backup_corrupted_file(target: Union[str, Path]) -> Path:
+    """
+    Preserve an unreadable/corrupted file as <name>.corrupt.bak before it gets
+    replaced, so user data is never silently destroyed.
+    """
+    target = Path(target)
+    backup = target.with_name(target.name + ".corrupt.bak")
+    try:
+        os.replace(target, backup)
+    except OSError:
+        pass
+    return backup

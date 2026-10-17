@@ -12,6 +12,7 @@ from typing import List, Dict, Any, Optional
 from wobble.core.context import get_wobble_home, get_home
 from wobble.core.logger import get_logger
 from wobble.core.executor import run_command
+from wobble.core.fsutil import atomic_write_json
 from wobble.project.spec import ProjectSpec, PROJECT_SPEC_FILENAME
 
 PROJECT_REGISTRY_FILE = get_wobble_home() / "projects.json"
@@ -22,18 +23,20 @@ def _load_registry() -> Dict[str, str]:
     if PROJECT_REGISTRY_FILE.exists():
         try:
             with open(PROJECT_REGISTRY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                # Drop malformed entries defensively instead of crashing later
+                return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+            return {}
         except Exception:
             return {}
     return {}
 
 
 def _save_registry(reg: Dict[str, str]):
-    """Save project registry."""
+    """Save project registry atomically so an interruption cannot corrupt it."""
     try:
-        PROJECT_REGISTRY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(PROJECT_REGISTRY_FILE, "w", encoding="utf-8") as f:
-            json.dump(reg, f, indent=2)
+        atomic_write_json(PROJECT_REGISTRY_FILE, reg)
     except Exception:
         pass
 
@@ -96,6 +99,7 @@ def list_projects(scan_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
 
     # 1. Registered projects
     reg = _load_registry()
+    stale: List[str] = []
     for name, p_str in list(reg.items()):
         p = Path(p_str)
         if p.exists():
@@ -119,8 +123,13 @@ def list_projects(scan_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
                     "registered": True
                 }
         else:
-            # Stale registry entry
-            unregister_project(name)
+            # Stale registry entry; prune in one batched save below
+            stale.append(name)
+
+    if stale:
+        for name in stale:
+            reg.pop(name, None)
+        _save_registry(reg)
 
     # 2. Scan directory (defaults to current working directory)
     scan_root = scan_dir or Path.cwd()

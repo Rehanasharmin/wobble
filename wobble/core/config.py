@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 from wobble.core.context import get_wobble_config_path, get_wobble_home
+from wobble.core.fsutil import atomic_write_json, backup_corrupted_file
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "version": "1.0",
@@ -30,26 +31,30 @@ class ConfigManager:
         self.load()
 
     def load(self) -> Dict[str, Any]:
-        """Load configuration from disk, falling back to defaults."""
+        """Load configuration from disk, falling back to defaults on corruption."""
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    self._config = {**DEFAULT_CONFIG, **data}
+                if not isinstance(data, dict):
+                    raise ValueError("config root must be a JSON object")
+                self._config = {**DEFAULT_CONFIG, **data}
             except Exception:
+                # Keep the unreadable file around for manual recovery instead of
+                # silently destroying user data on the next save.
+                backup_corrupted_file(self.config_path)
                 self._config = DEFAULT_CONFIG.copy()
+                self.save()
         else:
             self._config = DEFAULT_CONFIG.copy()
             self.save()
         return self._config
 
     def save(self):
-        """Save current configuration to disk."""
+        """Save current configuration to disk atomically."""
         try:
-            self.config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self._config, f, indent=2)
-        except Exception as e:
+            atomic_write_json(self.config_path, self._config)
+        except Exception:
             pass
 
     def get(self, key: str, default: Any = None) -> Any:
