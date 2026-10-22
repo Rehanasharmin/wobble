@@ -12,14 +12,19 @@
 # ============================================================================
 set -eu
 
-RESET="\033[0m"
-BOLD="\033[1m"
-DIM="\033[2m"
-CYAN="\033[36m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-RED="\033[31m"
-MAGENTA="\033[35m"
+# --- ANSI fix: expand escapes at assignment time so the variables hold real
+#     ESC bytes. Previously `CYAN="\033[36m"` stored the literal 6 characters
+#     "\033[36m", and `printf '%s' "$CYAN"` printed them verbatim instead of
+#     emitting a color code. `printf '\033…'` interprets the escape because it
+#     is in the format string, so the variable gets the actual byte sequence.
+RESET=$(printf '\033[0m')
+BOLD=$(printf '\033[1m')
+DIM=$(printf '\033[2m')
+CYAN=$(printf '\033[36m')
+GREEN=$(printf '\033[32m')
+YELLOW=$(printf '\033[33m')
+RED=$(printf '\033[31m')
+MAGENTA=$(printf '\033[35m')
 
 if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
     RESET=""; BOLD=""; DIM=""; CYAN=""; GREEN=""; YELLOW=""; RED=""; MAGENTA=""
