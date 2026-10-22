@@ -53,17 +53,31 @@ def inspect_apk(apk_path: Path) -> Dict[str, Any]:
     """Exhaustively inspect an APK file's metadata, contents, architecture, and signature."""
     path = Path(apk_path).resolve()
     if not path.is_file():
-        return {"error": f"File not found: {path}"}
+        return {
+            "success": False,
+            "error": f"APK file not found: {path}",
+            "error_code": "apk_not_found",
+            "path": str(path),
+        }
 
-    stat = path.stat()
-    size_bytes = stat.st_size
+    try:
+        stat = path.stat()
+        size_bytes = stat.st_size
 
-    # Calculate SHA-256
-    sha256_hash = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            sha256_hash.update(chunk)
-    sha256 = sha256_hash.hexdigest()
+        # Calculate SHA-256 without loading a potentially large APK into RAM.
+        sha256_hash = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                sha256_hash.update(chunk)
+        sha256 = sha256_hash.hexdigest()
+    except OSError as exc:
+        return {
+            "success": False,
+            "error": f"Cannot read APK '{path}': {exc}",
+            "error_code": "apk_read_failed",
+            "path": str(path),
+            "hint": "Check the file permissions and available storage.",
+        }
 
     # Inspect ZIP structure
     dex_files = []
@@ -89,13 +103,20 @@ def inspect_apk(apk_path: Path) -> Dict[str, Any]:
                 elif filename.startswith("META-INF/"):
                     if filename.endswith((".RSA", ".DSA", ".EC")):
                         signatures.append(filename)
-    except Exception as e:
-        return {"error": f"Invalid APK ZIP archive: {e}"}
+    except (OSError, zipfile.BadZipFile, EOFError) as exc:
+        return {
+            "success": False,
+            "error": f"Invalid or unreadable APK ZIP archive '{path}': {exc}",
+            "error_code": "invalid_apk_archive",
+            "path": str(path),
+            "hint": "Rebuild the APK or choose a complete, non-corrupted .apk file.",
+        }
 
     # Try extracting detailed Android package metadata
     metadata = _extract_badging_metadata(path)
 
     return {
+        "success": True,
         "file_name": path.name,
         "path": str(path),
         "size_bytes": size_bytes,
@@ -210,6 +231,8 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
             "error": f"APK file not found: {path}"
         }
 
+    attempts = []
+
     # 1. ADB method
     if method == "adb":
         adb_bin = find_tool("adb")
@@ -221,12 +244,19 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
             }
         res = run_command([adb_bin, "install", "-r", str(path)], timeout=60)
         is_success = "Success" in res.stdout
-        return {
+        output = (res.stdout or res.stderr).strip()
+        result = {
             "success": is_success,
             "method": "adb",
-            "output": (res.stdout or res.stderr).strip(),
-            "message": "APK installed successfully via ADB." if is_success else f"ADB installation failed: {res.stderr or res.stdout}"
+            "output": output,
+            "returncode": res.returncode,
         }
+        if is_success:
+            result["message"] = "APK installed successfully via ADB."
+        else:
+            result["error"] = f"ADB installation failed: {output or getattr(res, 'error', None) or 'device rejected the install'}"
+            result["error_code"] = "adb_install_failed"
+        return result
 
     # 2. Termux-open method (Standard on-device Android workflow)
     if method in ("auto", "termux-open"):
@@ -246,8 +276,10 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
                 return {
                     "success": False,
                     "method": "termux-open",
-                    "error": f"termux-open failed: {res.stderr or res.stdout}"
+                    "error": f"termux-open failed: {res.stderr or res.stdout}",
+                    "error_code": "install_intent_failed",
                 }
+            attempts.append(f"termux-open: {(res.stderr or res.stdout).strip()}")
 
     # 3. Android Intent 'am start' fallback
     if method in ("auto", "am"):
@@ -270,8 +302,10 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
                 return {
                     "success": False,
                     "method": "am",
-                    "error": f"am start failed: {res.stderr or res.stdout}"
+                    "error": f"am start failed: {res.stderr or res.stdout}",
+                    "error_code": "install_intent_failed",
                 }
+            attempts.append(f"am start: {(res.stderr or res.stdout).strip()}")
 
     if method != "auto":
         return {
@@ -280,10 +314,21 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
             "error": f"Requested install method '{method}' is not available on this system."
         }
 
+    if attempts:
+        message = "No APK installation method succeeded. " + " | ".join(attempts)
+        code = "install_methods_failed"
+        hint = "Check Android package-installer permissions, or try --method adb with a connected device."
+    else:
+        message = "Could not find 'termux-open' or 'am'. Make sure the 'termux-tools' package is installed."
+        code = "install_method_unavailable"
+        hint = "Run 'pkg install -y termux-tools', then try again."
     return {
         "success": False,
         "method": "none",
-        "error": "Could not find 'termux-open' or 'am'. Make sure 'termux-tools' package is installed."
+        "error": message,
+        "error_code": code,
+        "hint": hint,
+        "attempts": attempts,
     }
 
 

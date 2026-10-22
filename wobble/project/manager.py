@@ -12,46 +12,71 @@ from typing import List, Dict, Any, Optional
 from wobble.core.context import get_wobble_home, get_home
 from wobble.core.logger import get_logger
 from wobble.core.executor import run_command
-from wobble.core.fsutil import atomic_write_json
+from wobble.core.errors import RegistryError
+from wobble.core.fsutil import atomic_write_json, backup_corrupted_file
 from wobble.project.spec import ProjectSpec, PROJECT_SPEC_FILENAME
 
 PROJECT_REGISTRY_FILE = get_wobble_home() / "projects.json"
 
 
 def _load_registry() -> Dict[str, str]:
-    """Load project registry mapping {name: absolute_path}."""
-    if PROJECT_REGISTRY_FILE.exists():
+    """Load {name: absolute_path}, preserving corrupt data before recovery."""
+    try:
+        with PROJECT_REGISTRY_FILE.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("project registry root must be a JSON object")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        raise RegistryError(
+            f"Cannot read project registry '{PROJECT_REGISTRY_FILE}': {exc}",
+            code="registry_read_failed",
+            hint="Check the file and ~/.wobble directory permissions.",
+        ) from exc
+    except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
         try:
-            with open(PROJECT_REGISTRY_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                # Drop malformed entries defensively instead of crashing later
-                return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
-            return {}
-        except Exception:
-            return {}
-    return {}
+            backup = backup_corrupted_file(PROJECT_REGISTRY_FILE)
+            atomic_write_json(PROJECT_REGISTRY_FILE, {})
+        except OSError as recovery_error:
+            raise RegistryError(
+                f"Project registry is invalid and could not be recovered safely: {recovery_error}",
+                code="registry_recovery_failed",
+                hint=f"Repair or remove {PROJECT_REGISTRY_FILE} manually; its data was not overwritten.",
+            ) from recovery_error
+        get_logger().warn(f"Invalid project registry was preserved at '{backup}'; starting with an empty registry ({exc}).")
+        return {}
+
+    # Individual malformed entries are ignored without discarding valid ones.
+    return {str(key): value for key, value in data.items() if isinstance(value, str)}
 
 
-def _save_registry(reg: Dict[str, str]):
-    """Save project registry atomically so an interruption cannot corrupt it."""
+def _save_registry(reg: Dict[str, str]) -> None:
+    """Save atomically and report failure instead of claiming a write succeeded."""
     try:
         atomic_write_json(PROJECT_REGISTRY_FILE, reg)
-    except Exception:
-        pass
+    except Exception as exc:
+        raise RegistryError(
+            f"Cannot save project registry '{PROJECT_REGISTRY_FILE}': {exc}",
+            code="registry_write_failed",
+            hint="Check available disk space and ~/.wobble permissions, then retry.",
+        ) from exc
 
 
-def register_project(name: str, path: Path):
+def register_project(name: str, path: Path) -> None:
     reg = _load_registry()
     reg[name] = str(path.resolve())
     _save_registry(reg)
 
 
-def unregister_project(name: str):
+def unregister_project(name: str) -> bool:
+    """Remove a registry entry and return whether it existed."""
     reg = _load_registry()
-    if name in reg:
-        del reg[name]
-        _save_registry(reg)
+    if name not in reg:
+        return False
+    del reg[name]
+    _save_registry(reg)
+    return True
 
 
 def find_current_project(start_dir: Optional[Path] = None) -> Optional[ProjectSpec]:
@@ -64,7 +89,7 @@ def find_current_project(start_dir: Optional[Path] = None) -> Optional[ProjectSp
     # Search upwards for wobble.json
     p = curr
     while True:
-        spec = ProjectSpec.load_from_dir(p)
+        spec = ProjectSpec.load_from_dir(p, strict=True)
         if spec:
             return spec
         if p.parent == p:

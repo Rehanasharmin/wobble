@@ -32,8 +32,8 @@ def atomic_write_text(target: Union[str, Path], content: str, encoding: str = "u
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_name, target)
-    except Exception:
-        # Never leave stray temp files behind on failure
+    except BaseException:
+        # Never leave stray temp files behind on failure or Ctrl+C.
         try:
             os.unlink(tmp_name)
         except OSError:
@@ -47,14 +47,18 @@ def atomic_write_json(target: Union[str, Path], data: Any, indent: int = 2) -> N
 
 
 def backup_corrupted_file(target: Union[str, Path]) -> Path:
-    """
-    Preserve an unreadable/corrupted file as <name>.corrupt.bak before it gets
-    replaced, so user data is never silently destroyed.
+    """Move a corrupt file aside without overwriting an earlier backup.
+
+    Failures deliberately propagate: callers must not replace the original when
+    they could not preserve it. The first backup keeps the historical
+    ``.corrupt.bak`` name; later recoveries use ``.corrupt.bak.1``, etc.
     """
     target = Path(target)
-    backup = target.with_name(target.name + ".corrupt.bak")
-    try:
-        os.replace(target, backup)
-    except OSError:
-        pass
+    base = target.with_name(target.name + ".corrupt.bak")
+    backup = base
+    counter = 1
+    while backup.exists():
+        backup = target.with_name(base.name + f".{counter}")
+        counter += 1
+    os.replace(target, backup)
     return backup

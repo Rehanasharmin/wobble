@@ -10,8 +10,17 @@ import os
 import re
 import argparse
 from pathlib import Path
+from typing import List, Optional
 
 from wobble import __version__
+from wobble.core.errors import (
+    EXIT_FAILURE,
+    EXIT_INTERRUPTED,
+    RegistryError,
+    UsageError,
+    WobbleError,
+    unexpected_error_payload,
+)
 from wobble.core.logger import Logger, set_logger, get_logger
 
 # NOTE: heavyweight subcommand modules (doctor, apk, web, deps, plugins) are
@@ -19,9 +28,31 @@ from wobble.core.logger import Logger, set_logger, get_logger
 # trivial commands fast on mobile CPUs where import time is noticeable.
 
 
+class WobbleArgumentParser(argparse.ArgumentParser):
+    """Raise parse errors so ``main`` can honor JSON mode and return exit 2."""
+
+    def error(self, message: str):
+        raise UsageError(
+            message,
+            hint=f"Run '{self.prog} --help' for usage.",
+            details={"usage": self.format_usage().strip()},
+        )
+
+
+def _port_number(value: str) -> int:
+    """Argparse type for a real, bindable TCP port (zero is not meaningful here)."""
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("port must be an integer between 1 and 65535")
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the main argument parser for Wobble CLI."""
-    parser = argparse.ArgumentParser(
+    parser = WobbleArgumentParser(
         prog="wob",
         description="Wobble - the Termux development harness for Android and web projects",
         epilog="""examples:
@@ -78,18 +109,18 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     p_web = subparsers.add_parser("web", help="Web development workflows")
     sp_web = p_web.add_subparsers(dest="subcommand")
     p_web_dev = sp_web.add_parser("dev", help="Start framework development server")
-    p_web_dev.add_argument("-p", "--port", type=int, help="Port to listen on")
+    p_web_dev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
     p_web_dev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
     p_web_dev.add_argument("--lan", action="store_true", help="Expose the dev server on your LAN (0.0.0.0)")
     sp_web.add_parser("build", help="Build web application for distribution")
     sp_web.add_parser("test", help="Run web test suite")
     p_web_prev = sp_web.add_parser("preview", help="Start the hardened preview server (localhost by default)")
-    p_web_prev.add_argument("-p", "--port", type=int, help="Port to serve on")
+    p_web_prev.add_argument("-p", "--port", type=_port_number, help="Port to serve on (1-65535)")
     p_web_prev.add_argument("--dir", help="Directory to serve")
     p_web_prev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
     p_web_prev.add_argument("--lan", action="store_true", help="Expose the preview on your LAN (0.0.0.0)")
     p_web_serve = sp_web.add_parser("serve", help="Static HTTP file server")
-    p_web_serve.add_argument("-p", "--port", type=int, help="Port to serve on")
+    p_web_serve.add_argument("-p", "--port", type=_port_number, help="Port to serve on (1-65535)")
     p_web_serve.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
     p_web_serve.add_argument("--lan", action="store_true", help="Expose the server on your LAN (0.0.0.0)")
 
@@ -191,12 +222,12 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     p_build.add_argument("--release", action="store_true", help="Build release APK or production bundle")
 
     p_dev = subparsers.add_parser("dev", help="Start dev server for current project")
-    p_dev.add_argument("-p", "--port", type=int, help="Port to listen on")
+    p_dev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
     p_dev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
     p_dev.add_argument("--lan", action="store_true", help="Expose on LAN (0.0.0.0)")
 
     p_prev = subparsers.add_parser("preview", help="Preview the current project locally (--lan for Wi-Fi)")
-    p_prev.add_argument("-p", "--port", type=int, help="Port to listen on")
+    p_prev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
     p_prev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
     p_prev.add_argument("--lan", action="store_true", help="Expose on LAN (0.0.0.0)")
 
@@ -315,11 +346,32 @@ def handle_create(args) -> int:
 
     success = plugin.create_project(name, target_dir, options)
     if success:
-        register_project(name, target_dir)
-        logger.success(f"Project '{name}' successfully created!")
-        if not logger.json_mode:
+        registry_warning = None
+        try:
+            register_project(name, target_dir)
+        except RegistryError as exc:
+            # Scaffolding already succeeded; do not misreport it as a total
+            # failure merely because the optional convenience registry is full
+            # or read-only. Surface the degraded state explicitly instead.
+            registry_warning = str(exc)
+            logger.warn(f"Project was created, but could not be registered: {exc}")
+
+        if logger.json_mode:
+            result = {
+                "success": True,
+                "project": {
+                    "name": name,
+                    "path": str(target_dir.resolve()),
+                    "type": p_type,
+                    "framework": plugin.name,
+                },
+                "registered": registry_warning is None,
+            }
+            logger.json_output(result)
+        else:
+            logger.success(f"Project '{name}' successfully created!")
             print("\nNext steps:")
-            print(f"  cd {name}")
+            print(f"  cd {target_dir}")
             if p_type == "android":
                 print("  wob apk build       # Build debug APK")
                 print("  wob apk install     # Install APK on phone")
@@ -412,7 +464,9 @@ def handle_project(args) -> int:
 
     elif sub in ("remove", "unregister"):
         name = args.name
-        unregister_project(name)
+        if not unregister_project(name):
+            logger.error(f"Project '{name}' is not registered. Run 'wob project list' to inspect the registry.")
+            return 1
         if logger.json_mode:
             logger.json_output({"status": "unregistered", "project": name})
         else:
@@ -505,6 +559,7 @@ def _resolve_host(args) -> str:
 
 
 def handle_web(args) -> int:
+    import time as _time
     from wobble.web.manager import run_web_dev, run_web_build, run_web_test, run_web_preview
 
     sub = args.subcommand or "preview"
@@ -521,18 +576,20 @@ def handle_web(args) -> int:
             get_logger().json_output(res)
         elif res.get("success"):
             get_logger().detail("Build time", f"{res['elapsed_seconds']}s")
+        else:
+            get_logger().error(res.get("error") or res.get("stderr") or "Web build failed.")
         return 0 if res.get("success") else 1
     elif sub == "test":
         res = run_web_test(cwd)
         if get_logger().json_mode:
             get_logger().json_output(res)
+        elif not res.get("success"):
+            get_logger().error(res.get("error") or res.get("stderr") or "Web tests failed.")
         return 0 if res.get("success") else 1
     elif sub == "preview":
-        run_web_preview(cwd, port=args.port, target_sub_dir=args.dir, host=host)
-        return 0
+        return run_web_preview(cwd, port=args.port, target_sub_dir=args.dir, host=host)
     elif sub == "serve":
-        run_web_preview(cwd, port=args.port, host=host)
-        return 0
+        return run_web_preview(cwd, port=args.port, host=host)
     return 0
 
 
@@ -587,6 +644,12 @@ def handle_apk(args) -> int:
         info = inspect_apk(target_apk)
         if logger.json_mode:
             logger.json_output(info)
+            return 0 if info.get("success") else 1
+        if not info.get("success"):
+            logger.error(info.get("error", "APK inspection failed."))
+            if info.get("hint"):
+                logger.hint(info["hint"])
+            return 1
         else:
             logger.heading(f"APK Information: {info.get('file_name')}")
             logger.detail("Package Name", info.get("package_name"))
@@ -620,6 +683,8 @@ def handle_apk(args) -> int:
                 logger.success(res.get("message"))
             else:
                 logger.error(f"Installation failed: {res.get('error')}")
+                if res.get("hint"):
+                    logger.hint(f"Hint: {res['hint']}")
         return 0 if res.get("success") else 1
 
     elif sub == "share":
@@ -642,6 +707,8 @@ def handle_apk(args) -> int:
                 logger.detail("Destination", res.get("destination"))
             else:
                 logger.error(f"Share failed: {res.get('error')}")
+                if res.get("hint"):
+                    logger.hint(f"Hint: {res['hint']}")
         return 0 if res.get("success") else 1
 
     elif sub == "sign":
@@ -664,22 +731,38 @@ def handle_apk(args) -> int:
                 logger.detail("Keystore", res.get("keystore"))
             else:
                 logger.error(f"Sign failed: {res.get('error')}")
+                if res.get("hint"):
+                    logger.hint(f"Hint: {res['hint']}")
         return 0 if res.get("success") else 1
 
     elif sub == "clean":
         apks = find_apks(cwd)
         removed = 0
-        for a in apks:
+        failures = []
+        for apk in apks:
             try:
-                a.unlink()
+                apk.unlink()
                 removed += 1
-            except Exception:
-                pass
+            except OSError as exc:
+                failures.append({"path": str(apk), "error": str(exc)})
+        result = {
+            "success": not failures,
+            "removed": removed,
+            "failed": len(failures),
+            "errors": failures,
+        }
+        if failures:
+            result["error"] = f"Could not remove {len(failures)} APK file(s)."
+            result["error_code"] = "apk_clean_partial"
         if logger.json_mode:
-            logger.json_output({"removed": removed})
+            logger.json_output(result)
+        elif failures:
+            logger.warn(f"Removed {removed} APK file(s), but {len(failures)} could not be removed.")
+            for failure in failures:
+                logger.error(f"{failure['path']}: {failure['error']}")
         else:
             logger.success(f"Removed {removed} APK file(s).")
-        return 0
+        return 0 if not failures else 1
     return 0
 
 
@@ -688,24 +771,25 @@ def handle_deps(args) -> int:
 
     sub = args.subcommand or "doctor"
     cwd = Path.cwd()
+    logger = get_logger()
+
+    def finish_operation(res):
+        if logger.json_mode:
+            logger.json_output(res)
+        elif not res.get("success"):
+            logger.error(res.get("error") or res.get("stderr") or "Dependency operation failed.")
+            if res.get("hint"):
+                logger.hint(res["hint"])
+        return 0 if res.get("success") else 1
 
     if sub == "install":
-        res = deps_install(args.target, cwd)
-        if get_logger().json_mode:
-            get_logger().json_output(res)
-        return 0 if res.get("success") else 1
+        return finish_operation(deps_install(args.target, cwd))
 
     elif sub == "add":
-        res = deps_add(args.package, args.manager, cwd)
-        if get_logger().json_mode:
-            get_logger().json_output(res)
-        return 0 if res.get("success") else 1
+        return finish_operation(deps_add(args.package, args.manager, cwd))
 
     elif sub == "remove":
-        res = deps_remove(args.package, args.manager, cwd)
-        if get_logger().json_mode:
-            get_logger().json_output(res)
-        return 0 if res.get("success") else 1
+        return finish_operation(deps_remove(args.package, args.manager, cwd))
 
     elif sub == "doctor":
         res = deps_doctor(cwd)
@@ -740,8 +824,10 @@ def handle_deps(args) -> int:
                 print("  System Packages:")
                 for s in res["system"]:
                     print(f"    - {s}")
+            for issue in res.get("errors", []):
+                get_logger().error(f"Cannot read {issue['path']}: {issue['error']}")
             print()
-        return 0
+        return 0 if res.get("success", True) else 1
     return 0
 
 
@@ -794,6 +880,8 @@ def handle_config(args) -> int:
     logger = get_logger()
     cfg = get_config()
     sub = args.subcommand or "list"
+    for warning in cfg.warnings:
+        logger.warn(warning)
 
     if sub == "list":
         if logger.json_mode:
@@ -805,6 +893,9 @@ def handle_config(args) -> int:
             print()
         return 0
     elif sub == "get":
+        if args.key not in cfg.all():
+            logger.error(f"Configuration key '{args.key}' is not set.{_suggest_names(args.key, cfg.all().keys())}")
+            return 1
         val = cfg.get(args.key)
         if logger.json_mode:
             logger.json_output({args.key: val})
@@ -879,28 +970,50 @@ def handle_clean(args) -> int:
 
     removed = 0
     freed = 0
-    for t in targets:
+    failures = []
+    for target in targets:
         try:
-            if t.is_file():
-                freed += t.stat().st_size
-                t.unlink()
-            elif t.is_dir():
-                for dirpath, dirnames, filenames in os.walk(t):
-                    for f in filenames:
+            if target.is_file() or target.is_symlink():
+                try:
+                    freed += target.stat().st_size
+                except OSError:
+                    pass
+                target.unlink()
+            elif target.is_dir():
+                for dirpath, dirnames, filenames in os.walk(target):
+                    for filename in filenames:
                         try:
-                            freed += (Path(dirpath) / f).stat().st_size
+                            freed += (Path(dirpath) / filename).stat().st_size
                         except OSError:
                             pass
-                shutil.rmtree(t, ignore_errors=True)
+                # Never use ignore_errors=True and then claim success.
+                shutil.rmtree(target)
+            else:
+                # It disappeared between discovery and deletion.
+                continue
             removed += 1
-        except OSError:
-            pass
+        except OSError as exc:
+            failures.append({"path": str(target), "error": str(exc)})
 
+    result = {
+        "success": not failures,
+        "removed": removed,
+        "failed": len(failures),
+        "freed_bytes": freed,
+        "errors": failures,
+    }
+    if failures:
+        result["error"] = f"Clean completed with {len(failures)} error(s)."
+        result["error_code"] = "clean_partial"
     if logger.json_mode:
-        logger.json_output({"removed": removed, "freed_bytes": freed})
+        logger.json_output(result)
+    elif failures:
+        logger.warn(f"Removed {removed} item(s), but {len(failures)} item(s) could not be removed.")
+        for failure in failures:
+            logger.error(f"{failure['path']}: {failure['error']}")
     else:
         logger.success(f"Removed {removed} item(s), freeing {round(freed / (1024 * 1024), 1)} MB.")
-    return 0
+    return 0 if not failures else 1
 
 
 def handle_completion(args) -> int:
@@ -1021,6 +1134,13 @@ def handle_self(args) -> int:
     if sub == "verify":
         data = installer.verify(root)
         if logger.json_mode:
+            data["success"] = bool(data.get("ok"))
+            if not data["success"]:
+                if data.get("error"):
+                    data.setdefault("error_code", "installation_manifest_missing")
+                else:
+                    data["error"] = "Installed files failed integrity verification."
+                    data["error_code"] = "installation_verification_failed"
             logger.json_output(data)
             return 0 if data.get("ok") else 1
         print(theme.rule("installation integrity", width=64, use_color=logger.use_color))
@@ -1163,6 +1283,13 @@ def handle_update(args) -> int:
 
 
 _GLOBAL_FLAGS = {"--json", "--no-color", "-v", "--verbose"}
+# Global flag hoisting must not steal a token that belongs to another option.
+# Keep this list in sync with value-taking options in build_parser().
+_OPTIONS_WITH_VALUES = {
+    "-f", "--framework", "-p", "--package", "--port", "-d", "--dir",
+    "--path", "--host", "--dest", "--keystore", "--alias", "--method",
+    "-m", "--manager", "--root", "--bin",
+}
 
 
 def _hoist_global_flags(argv: List[str]) -> List[str]:
@@ -1176,12 +1303,25 @@ def _hoist_global_flags(argv: List[str]) -> List[str]:
     flags: List[str] = []
     rest: List[str] = []
     seen_dashdash = False
+    expects_value = False
     for token in argv:
-        if token == "--" and not seen_dashdash:
+        if seen_dashdash:
+            rest.append(token)
+            continue
+        if expects_value:
+            # This token is data, even when it is spelled --json or -v.
+            rest.append(token)
+            expects_value = False
+            continue
+        if token == "--":
             seen_dashdash = True
             rest.append(token)
             continue
-        if not seen_dashdash and token in _GLOBAL_FLAGS:
+        if token in _OPTIONS_WITH_VALUES:
+            rest.append(token)
+            expects_value = True
+            continue
+        if token in _GLOBAL_FLAGS:
             if token not in flags:
                 flags.append(token)
             continue
@@ -1189,54 +1329,128 @@ def _hoist_global_flags(argv: List[str]) -> List[str]:
     return flags + rest
 
 
+def _leading_global_flags(argv: List[str]) -> set:
+    """Return only hoisted flags, not lookalikes retained as option values."""
+    leading = set()
+    for token in argv:
+        if token not in _GLOBAL_FLAGS:
+            break
+        leading.add(token)
+    return leading
+
+
+def _report_error(logger: Logger, error: WobbleError) -> None:
+    """Render an expected error once, respecting the output contract."""
+    if logger.json_mode:
+        if not logger._json_emitted:
+            logger.json_output(error.to_dict())
+        else:
+            # A long-running command may already have emitted its startup
+            # document. Preserve stdout as valid JSON but never lose a later
+            # failure: send a compact diagnostic document to stderr.
+            import json
+            print(json.dumps(error.to_dict(), default=str), file=sys.stderr)
+        return
+    usage = error.details.get("usage") if isinstance(error, UsageError) else None
+    if usage:
+        print(usage, file=sys.stderr)
+    logger.error(error.message)
+    if error.hint:
+        print(f"Hint: {error.hint}", file=sys.stderr)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     argv = _hoist_global_flags(list(sys.argv[1:] if argv is None else argv))
 
-    # Bare `wob` never needs argparse: render the ASCII landing screen instead.
-    if not argv:
-        from wobble.bootstrap import print_landing
-        print_landing()
-        return 0
-
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
-    # Initialize Logger
-    logger = Logger(json_mode=args.json, no_color=args.no_color)
+    # Initialize output before parsing so malformed arguments also honor real
+    # global flags (but not --json/-v tokens consumed as another option's value).
+    global_flags = _leading_global_flags(argv)
+    logger = Logger(json_mode="--json" in global_flags, no_color="--no-color" in global_flags)
     set_logger(logger)
-
-    if not args.command:
-        if logger.json_mode:
-            logger.json_output({
-                "name": "wobble",
-                "command": "wob",
-                "version": __version__,
-                "hint": "Run 'wob --help' or 'wob schema' for the full command list.",
-            })
-        else:
-            parser.print_help()
-        return 0
+    verbose = "--verbose" in global_flags or "-v" in global_flags
 
     try:
-        return _dispatch(parser, args)
+        # Bare `wob` never needs argparse, but it gets the same broken-pipe and
+        # unexpected-error protection as every parsed command.
+        if not argv:
+            from wobble.bootstrap import print_landing
+            print_landing()
+            return 0
+
+        parser = build_parser()
+        args = parser.parse_args(argv)
+
+        if not args.command:
+            if logger.json_mode:
+                logger.json_output({
+                    "name": "wobble",
+                    "command": "wob",
+                    "version": __version__,
+                    "hint": "Run 'wob --help' or 'wob schema' for the full command list.",
+                })
+            else:
+                parser.print_help()
+            return 0
+
+        exit_code = _dispatch(parser, args)
+        if not isinstance(exit_code, int):
+            raise WobbleError(
+                f"Command '{args.command}' did not return a valid exit status.",
+                code="invalid_exit_status",
+            )
+        # A signal can be reported by subprocess APIs as -SIG. Shells expect
+        # 128+SIG, never Python's platform-dependent wrapping of a negative exit.
+        if exit_code < 0:
+            exit_code = 128 - exit_code
+
+        if exit_code != 0 and logger.json_mode and not logger._json_emitted:
+            message = (
+                logger.errors[-1]
+                if logger.errors
+                else f"Command '{args.command}' failed with exit code {exit_code}."
+            )
+            logger.json_output(WobbleError(
+                message,
+                code="command_failed",
+                details={"exit_code": exit_code},
+            ).to_dict())
+        return exit_code
     except KeyboardInterrupt:
-        if not logger.json_mode:
-            print("\nInterrupted.")
-        return 130
+        if logger.json_mode:
+            if not logger._json_emitted:
+                logger.json_output({
+                    "success": False,
+                    "error": "Interrupted by user.",
+                    "error_code": "interrupted",
+                    "details": {"exit_code": EXIT_INTERRUPTED},
+                })
+        else:
+            print("\nInterrupted.", file=sys.stderr)
+        return EXIT_INTERRUPTED
     except BrokenPipeError:
-        # Allow piping into head/tail without a scary traceback
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass
+        # Allow piping into head/tail without closing a caller-owned stream.
         return 0
-    except Exception as e:
-        if getattr(args, "verbose", False):
+    except WobbleError as exc:
+        if verbose:
             import traceback
             traceback.print_exc()
-        logger.error(f"Unexpected error: {e}")
-        logger.info("Run with --verbose for a full traceback, or 'wob doctor' to check your environment.")
-        return 1
+        _report_error(logger, exc)
+        return exc.exit_code
+    except Exception as exc:
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        if logger.json_mode:
+            payload = unexpected_error_payload(exc, verbose=verbose)
+            if not logger._json_emitted:
+                logger.json_output(payload)
+            else:
+                import json
+                print(json.dumps(payload, default=str), file=sys.stderr)
+        else:
+            logger.error(f"Unexpected error: {exc}")
+            logger.info("Run with --verbose for a full traceback, or 'wob doctor' to check your environment.")
+        return EXIT_FAILURE
 
 
 def _dispatch(parser: argparse.ArgumentParser, args) -> int:
@@ -1296,11 +1510,14 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> int:
         if spec and spec.project_type == "android":
             from wobble.android.manager import build_android
             res = build_android(Path.cwd(), release=args.release)
-            return 0 if res.get("success") else 1
         else:
             from wobble.web.manager import run_web_build
             res = run_web_build(Path.cwd())
-            return 0 if res.get("success") else 1
+        if logger.json_mode:
+            logger.json_output(res)
+        elif not res.get("success") and not logger.errors:
+            logger.error(res.get("error") or res.get("stderr") or "Build failed.")
+        return 0 if res.get("success") else 1
 
     elif cmd == "dev":
         from wobble.web.manager import run_web_dev
@@ -1308,8 +1525,7 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> int:
 
     elif cmd == "preview":
         from wobble.web.manager import run_web_preview
-        run_web_preview(Path.cwd(), port=args.port, host=_resolve_host(args))
-        return 0
+        return run_web_preview(Path.cwd(), port=args.port, host=_resolve_host(args))
 
     # Subcommand routing
     elif cmd == "create":

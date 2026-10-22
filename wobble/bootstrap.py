@@ -74,12 +74,42 @@ def maybe_handle_fast_path(argv: List[str]) -> Optional[int]:
 def run(argv: Optional[List[str]] = None) -> int:
     """Entry point shared by the installed launcher and ``python -m wobble``."""
     args = list(sys.argv[1:] if argv is None else argv)
-    fast = maybe_handle_fast_path(args)
-    if fast is not None:
-        return fast
+    try:
+        fast = maybe_handle_fast_path(args)
+        if fast is not None:
+            return fast
 
-    from wobble.cli import main
-    return main(args)
+        from wobble.cli import main
+        return main(args)
+    except BrokenPipeError:
+        # Do not close sys.stdout here: Wobble is also embedded by test runners
+        # and other Python callers that continue using the stream afterwards.
+        return 0
+    except KeyboardInterrupt:
+        if "--json" in args:
+            print(json.dumps({
+                "success": False,
+                "error": "Interrupted by user.",
+                "error_code": "interrupted",
+                "details": {"exit_code": 130},
+            }))
+        else:
+            print("\nInterrupted.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        # Fast paths deliberately bypass cli.main(); give them the same concise
+        # last-resort diagnostics instead of leaking a traceback.
+        from wobble.core.errors import unexpected_error_payload
+        verbose = "--verbose" in args or "-v" in args
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        if "--json" in args:
+            print(json.dumps(unexpected_error_payload(exc, verbose=verbose), indent=2))
+        else:
+            print(f"[x] Unexpected error: {exc}", file=sys.stderr)
+            print("[i] Run with --verbose for a full traceback, or 'wob doctor' to check your environment.", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

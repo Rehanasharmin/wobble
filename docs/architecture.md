@@ -160,7 +160,28 @@ Wobble never hardcodes paths. On every invocation:
 Every renderer produces identical layout with colour disabled, so `--no-color`,
 piped output, JSON mode, and test captures stay plain ASCII.
 
-## 7. Security Model
+## 7. Error handling and failure propagation
+
+- `wobble/core/errors.py` defines expected operational errors with a stable
+  `error_code`, optional recovery `hint`/`details`, and an exit status.
+- The custom argument parser raises `UsageError` instead of exiting before the
+  logger exists. Consequently even `wob web dev --port nope --json` returns one
+  valid JSON failure document and exit 2.
+- The CLI catches expected errors separately from unexpected exceptions. Human
+  output gets concise causes and hints; `--verbose` opts into tracebacks. JSON
+  mode records handler errors and emits a fallback failure document whenever a
+  non-zero handler did not already produce one.
+- `ExecutionResult` normalizes subprocess failures (`124`, `126`, `127`, `130`)
+  and retains partial stdout/stderr. Streaming commands capture child output in
+  JSON mode and terminate the whole child process group on interruption.
+- Config/registry writes are never silently discarded. Corrupt files are moved
+  to non-overwriting backups before recovery; write failures surface with paths
+  and rollback in-memory config changes. Current-project operations use strict
+  `wobble.json` parsing while broad directory scans remain tolerant.
+- Preview startup and cleanup operations return real failure statuses. Partial
+  deletion includes a per-path `errors` array instead of reporting success.
+
+## 8. Security Model
 
 - **Zero Root Requirements**: Wobble runs entirely within standard user permissions.
 - **W^X Compliance**: All builds and scripts execute from app-private storage.
@@ -170,7 +191,7 @@ piped output, JSON mode, and test captures stay plain ASCII.
 - **No secret leakage**: previews block credential files; keystore passwords reach `apksigner` through the `WOBBLE_KS_PASS` environment variable rather than argv.
 - **Privacy First**: No telemetry, analytics, or outbound background network calls.
 
-## 8. Test topology
+## 9. Test topology
 
 `tests/run_tests.py` discovers standard-library `unittest` modules:
 
@@ -178,6 +199,7 @@ piped output, JSON mode, and test captures stay plain ASCII.
 |:---|:---|
 | `test_installer.py` | install layout, manifest, source deletion, tamper detection, uninstall |
 | `test_hardening.py` | name/package validation, symlink targets, clean symlink safety |
+| `test_error_handling.py` | JSON failures, exit codes, subprocess diagnostics, strict specs, persistence and partial failures |
 | `test_preview_security.py` | blocked paths, traversal, gzip cache |
 | `test_theme.py` | ASCII purity, widths, colour toggling |
 | `test_plugins.py` | built-in discovery plus user-plugin trust rules |

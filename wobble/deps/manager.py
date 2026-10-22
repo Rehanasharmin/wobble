@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Optional
 
 from wobble.core.context import find_tool, is_termux
 from wobble.core.logger import get_logger
-from wobble.core.executor import run_command, stream_command
+from wobble.core.executor import stream_command_result
 from wobble.project.manager import find_current_project
 
 
@@ -58,6 +58,18 @@ def _get_system_uninstall_cmd(package_name: str) -> List[str]:
     return ["pkg", "uninstall", "-y", package_name]
 
 
+def _run_dependency_command(cmd: List[str], cwd: Optional[Path] = None, **fields: Any) -> Dict[str, Any]:
+    """Run a package manager without mixing child output into JSON responses."""
+    logger = get_logger()
+    result = stream_command_result(
+        cmd, cwd=cwd, capture_output=logger.json_mode
+    )
+    data = result.to_dict()
+    data.update(fields)
+    data["exit_code"] = result.returncode
+    return data
+
+
 def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = None) -> Dict[str, Any]:
     """
     Install project dependencies or a predefined toolchain stack.
@@ -72,26 +84,30 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
         pkgs = ["openjdk-17", "aapt", "apksigner", "zip", "unzip"]
         logger.step(f"System packages to install: {', '.join(pkgs)}")
         cmd = _get_system_install_cmd(pkgs)
-        exit_code = stream_command(cmd)
-        return {"success": exit_code == 0, "target": target, "installed": pkgs}
+        return _run_dependency_command(cmd, target=target, installed=pkgs)
 
     if target in ("node", "nodejs", "web"):
         logger.heading("Installing Node.js & Web Toolchain")
         cmd = _get_system_install_cmd(["nodejs"])
-        exit_code = stream_command(cmd)
-        return {"success": exit_code == 0, "target": target}
+        return _run_dependency_command(cmd, target=target)
 
     if target in ("python", "python3"):
         logger.heading("Installing Python 3")
         cmd = _get_system_install_cmd(["python"])
-        exit_code = stream_command(cmd)
-        return {"success": exit_code == 0, "target": target}
+        return _run_dependency_command(cmd, target=target)
 
     if target in ("php",):
         logger.heading("Installing PHP")
         cmd = _get_system_install_cmd(["php"])
-        exit_code = stream_command(cmd)
-        return {"success": exit_code == 0, "target": target}
+        return _run_dependency_command(cmd, target=target)
+
+    if target:
+        return {
+            "success": False,
+            "error": f"Unknown dependency stack '{target}'.",
+            "error_code": "unknown_dependency_stack",
+            "hint": "Use android, node, python, or php; omit the stack for the current project.",
+        }
 
     # Project-level dependencies
     spec = find_current_project(cwd)
@@ -103,8 +119,7 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
         tool_bin = find_tool(pkg_mgr)
         if not tool_bin:
             return {"success": False, "error": f"{pkg_mgr} not found. Please install nodejs: pkg install -y nodejs"}
-        exit_code = stream_command([tool_bin, "install"], cwd=cwd)
-        return {"success": exit_code == 0, "manager": pkg_mgr}
+        return _run_dependency_command([tool_bin, "install"], cwd=cwd, manager=pkg_mgr)
 
     elif pkg_mgr == "pip":
         py_bin = find_tool("python3") or find_tool("python")
@@ -112,16 +127,17 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
             return {"success": False, "error": "Python not found. Run: pkg install -y python"}
         req_file = cwd / "requirements.txt"
         if req_file.exists():
-            exit_code = stream_command([py_bin, "-m", "pip", "install", "-r", "requirements.txt"], cwd=cwd)
-            return {"success": exit_code == 0, "manager": "pip"}
+            return _run_dependency_command(
+                [py_bin, "-m", "pip", "install", "-r", "requirements.txt"],
+                cwd=cwd, manager="pip",
+            )
         return {"success": True, "notice": "No requirements.txt file found"}
 
     elif pkg_mgr == "composer":
         comp_bin = find_tool("composer")
         if not comp_bin:
             return {"success": False, "error": "Composer not found."}
-        exit_code = stream_command([comp_bin, "install"], cwd=cwd)
-        return {"success": exit_code == 0, "manager": "composer"}
+        return _run_dependency_command([comp_bin, "install"], cwd=cwd, manager="composer")
 
     elif spec and spec.project_type == "android":
         logger.info("Android project: dependencies are managed by Gradle during build.")
@@ -154,13 +170,9 @@ def deps_add(package_name: str, manager: str = "auto", project_dir: Optional[Pat
     else:
         return {"success": False, "error": f"Unknown package manager: {resolved_mgr}"}
 
-    exit_code = stream_command(cmd, cwd=cwd)
-    return {
-        "success": exit_code == 0,
-        "package": package_name,
-        "manager": resolved_mgr,
-        "command": " ".join(cmd)
-    }
+    return _run_dependency_command(
+        cmd, cwd=cwd, package=package_name, manager=resolved_mgr
+    )
 
 
 def deps_remove(package_name: str, manager: str = "auto", project_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -183,13 +195,9 @@ def deps_remove(package_name: str, manager: str = "auto", project_dir: Optional[
     else:
         return {"success": False, "error": f"Unknown package manager: {resolved_mgr}"}
 
-    exit_code = stream_command(cmd, cwd=cwd)
-    return {
-        "success": exit_code == 0,
-        "package": package_name,
-        "manager": resolved_mgr,
-        "command": " ".join(cmd)
-    }
+    return _run_dependency_command(
+        cmd, cwd=cwd, package=package_name, manager=resolved_mgr
+    )
 
 
 def deps_doctor(project_dir: Optional[Path] = None) -> Dict[str, Any]:
@@ -241,32 +249,49 @@ def deps_list(project_dir: Optional[Path] = None) -> Dict[str, Any]:
     spec = find_current_project(cwd)
 
     result: Dict[str, Any] = {
+        "success": True,
         "project": spec.name if spec else cwd.name,
         "dependencies": {},
         "dev_dependencies": {},
-        "system": []
+        "system": [],
+        "errors": [],
     }
 
     pkg_json = cwd / "package.json"
     if pkg_json.exists():
         try:
-            with open(pkg_json, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                result["dependencies"] = data.get("dependencies", {})
-                result["dev_dependencies"] = data.get("devDependencies", {})
-        except Exception:
-            pass
+            with pkg_json.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                raise ValueError("package.json root must be a JSON object")
+            dependencies = data.get("dependencies", {})
+            dev_dependencies = data.get("devDependencies", {})
+            if not isinstance(dependencies, dict) or not isinstance(dev_dependencies, dict):
+                raise ValueError("dependencies and devDependencies must be JSON objects")
+            result["dependencies"] = dependencies
+            result["dev_dependencies"] = dev_dependencies
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
+            result["errors"].append({"path": str(pkg_json), "error": str(exc)})
 
     req_txt = cwd / "requirements.txt"
     if req_txt.exists():
         try:
-            with open(req_txt, "r", encoding="utf-8") as f:
-                lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+            with req_txt.open("r", encoding="utf-8") as handle:
+                lines = []
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if line and not line.startswith("#"):
+                        lines.append(line)
                 result["dependencies"]["pip"] = lines
-        except Exception:
-            pass
+        except (OSError, UnicodeError) as exc:
+            result["errors"].append({"path": str(req_txt), "error": str(exc)})
 
     if spec and spec.dependencies:
         result["system"] = spec.dependencies.get("system", [])
 
+    if result["errors"]:
+        result["success"] = False
+        result["error"] = "Some dependency files could not be read."
+        result["error_code"] = "dependency_file_invalid"
+        result["hint"] = "Fix the listed files, then run 'wob deps list' again."
     return result

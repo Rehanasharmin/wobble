@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from wobble.core.logger import get_logger
-from wobble.core.executor import run_command, stream_command
+from wobble.core.executor import run_command, stream_command_result
 from wobble.plugins.loader import get_plugin
 from wobble.android.apk import find_apks, inspect_apk
 from wobble.android.sdk import get_sdk_status
@@ -25,7 +25,12 @@ def build_android(project_path: Path, release: bool = False, clean: bool = False
         logger.step("Cleaning prior build artifacts...")
         clean_cmd = android_plugin.get_clean_command(project_path)
         if clean_cmd:
-            run_command(clean_cmd, cwd=project_path)
+            clean_result = run_command(clean_cmd, cwd=project_path)
+            if not clean_result.success:
+                failure = clean_result.to_dict()
+                failure["error"] = f"Gradle clean failed: {clean_result.error}"
+                failure["stage"] = "clean"
+                return failure
 
     cmd = android_plugin.get_build_command(project_path, {"release": release})
     if not cmd:
@@ -34,15 +39,18 @@ def build_android(project_path: Path, release: bool = False, clean: bool = False
     mode = "Release" if release else "Debug"
     logger.step(f"Starting Android {mode} build with Gradle ({' '.join(cmd)})...")
 
-    # Stream output during build
-    exit_code = stream_command(cmd, cwd=project_path)
-    if exit_code != 0:
-        logger.error(f"Gradle build failed with exit code {exit_code}")
-        return {
-            "success": False,
-            "exit_code": exit_code,
-            "error": f"Gradle build failed with exit code {exit_code}"
-        }
+    # Stream for humans; capture in JSON mode so Gradle output cannot corrupt
+    # the machine-readable document.
+    result = stream_command_result(
+        cmd, cwd=project_path, capture_output=logger.json_mode
+    )
+    if not result.success:
+        logger.error(f"Gradle build failed with exit code {result.returncode}: {result.error}")
+        failure = result.to_dict()
+        failure["exit_code"] = result.returncode
+        failure["error"] = f"Gradle build failed with exit code {result.returncode}: {result.error}"
+        failure["stage"] = "build"
+        return failure
 
     # Find generated APKs
     apks = find_apks(project_path)
@@ -71,8 +79,4 @@ def clean_android(project_path: Path) -> Dict[str, Any]:
         return {"success": False, "error": "No clean command defined"}
 
     res = run_command(cmd, cwd=project_path)
-    return {
-        "success": res.success,
-        "stdout": res.stdout,
-        "stderr": res.stderr
-    }
+    return res.to_dict()
