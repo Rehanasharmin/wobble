@@ -13,6 +13,12 @@ from wobble.core.context import find_tool, get_android_sdk_candidates, get_java_
 from wobble.project.spec import ProjectSpec
 
 
+def _xml_escape(value: str) -> str:
+    """Escape text for Android XML resources without importing xml.sax."""
+    return (str(value).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;").replace("'", "&apos;"))
+
+
 class AndroidPlugin(BasePlugin):
     name = "android"
     version = "1.0.0"
@@ -212,7 +218,7 @@ public class MainActivity extends AppCompatActivity {{
         strings_xml = res_values / "strings.xml"
         with open(strings_xml, "w", encoding="utf-8") as f:
             f.write(f"""<resources>
-    <string name="app_name">{app_name}</string>
+    <string name="app_name">{_xml_escape(app_name)}</string>
 </resources>
 """)
 

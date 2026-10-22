@@ -3,6 +3,8 @@ Wobble Environment Context & Dynamic System Detection
 Detects Termux, Android, architecture, memory, storage, paths dynamically without hardcoding.
 """
 
+from __future__ import annotations
+
 import os
 import sys
 import platform
@@ -10,9 +12,9 @@ import shutil
 import socket
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Any, Optional, List
 
 
+@lru_cache(maxsize=1)
 def is_termux() -> bool:
     """Detect whether the current runtime environment is Termux."""
     if "TERMUX_VERSION" in os.environ or "PREFIX" in os.environ:
@@ -44,13 +46,22 @@ def get_wobble_home() -> Path:
     return get_home() / ".wobble"
 
 
+def get_wobble_config_dir() -> Path:
+    """Return the user configuration directory (~/.config/wobble)."""
+    return get_home() / ".config" / "wobble"
+
+
 def get_wobble_config_path() -> Path:
-    """Return user configuration path (~/.config/wobble/config.json)."""
-    cfg_dir = get_home() / ".config" / "wobble"
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    return cfg_dir / "config.json"
+    """
+    Return user configuration path (~/.config/wobble/config.json).
+
+    Deliberately free of side effects: merely asking where the config lives must
+    not create directories or write files (that costs I/O on every startup).
+    """
+    return get_wobble_config_dir() / "config.json"
 
 
+@lru_cache(maxsize=1)
 def get_architecture() -> str:
     """Detect machine architecture normalized to standard naming."""
     raw = platform.machine().lower()
@@ -236,6 +247,7 @@ def find_tool(name: str) -> Optional[str]:
     return None
 
 
+@lru_cache(maxsize=1)
 def get_android_sdk_candidates() -> List[Path]:
     """Return potential Android SDK paths dynamically based on standard Termux & user setups."""
     candidates = []
@@ -268,6 +280,7 @@ def get_android_sdk_candidates() -> List[Path]:
     return candidates
 
 
+@lru_cache(maxsize=1)
 def get_java_home_candidates() -> List[Path]:
     """Return potential JAVA_HOME paths dynamically."""
     candidates = []

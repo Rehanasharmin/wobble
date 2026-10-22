@@ -3,9 +3,10 @@ Wobble Project Specification & wobble.json Manager
 Provides schema validation, serialization, and deserialization of project metadata.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 from wobble import __version__
 from wobble.core.fsutil import atomic_write_json

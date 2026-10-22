@@ -2,7 +2,11 @@
 Test CLI parser, arguments, options, and commands.
 """
 
+import io
+import json
 import unittest
+from contextlib import redirect_stdout
+
 from wobble.cli import build_parser, main
 from wobble import __version__
 
@@ -42,6 +46,20 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(args.type, "android")
         self.assertEqual(args.name, "testapp")
         self.assertEqual(args.package, "com.test.app")
+
+    def test_global_flags_accepted_after_subcommand(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(["doctor", "--quick", "--json"])
+        data = json.loads(buf.getvalue().strip())
+        self.assertIn("checks", data)
+        self.assertTrue(data.get("quick"))
+
+    def test_no_color_after_subcommand(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            main(["banner", "--no-color"])
+        self.assertNotIn("\033[", buf.getvalue())
 
     def test_json_flag(self):
         args = self.parser.parse_args(["--json", "doctor"])

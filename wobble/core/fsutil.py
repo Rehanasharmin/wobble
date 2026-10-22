@@ -5,11 +5,12 @@ process is interrupted mid-write (common on mobile devices with aggressive
 process killers).
 """
 
+from __future__ import annotations
+
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Union
 
 
 def atomic_write_text(target: Union[str, Path], content: str, encoding: str = "utf-8") -> None:

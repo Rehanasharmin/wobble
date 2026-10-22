@@ -44,9 +44,9 @@ class VitePlugin(BasePlugin):
                 "version": "0.1.0",
                 "type": "module",
                 "scripts": {
-                    "dev": "vite --host",
+                    "dev": "vite",
                     "build": "vite build",
-                    "preview": "vite preview --host"
+                    "preview": "vite preview"
                 },
                 "devDependencies": {
                     "vite": "^5.2.0"
@@ -59,7 +59,9 @@ class VitePlugin(BasePlugin):
 
 export default defineConfig({
   server: {
-    host: '0.0.0.0',
+    // Localhost by default for safety.
+    // For phone-on-Wi-Fi testing use: wob dev --lan
+    host: '127.0.0.1',
     port: 3000
   }
 });
@@ -171,7 +173,7 @@ dist-ssr/
 
     def get_dev_command(self, project_path: Path, options: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
         port = (options or {}).get("port")
-        host = (options or {}).get("host", "0.0.0.0")
+        host = (options or {}).get("host", "127.0.0.1")
         cmd = ["npx", "vite", "--host", host]
         if port:
             cmd.extend(["--port", str(port)])

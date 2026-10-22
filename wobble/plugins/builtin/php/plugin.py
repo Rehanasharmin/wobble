@@ -93,7 +93,7 @@ composer.phar
 
     def get_dev_command(self, project_path: Path, options: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
         port = (options or {}).get("port", 3000)
-        host = (options or {}).get("host", "0.0.0.0")
+        host = (options or {}).get("host", "127.0.0.1")
         target_dir = "public" if (project_path / "public").is_dir() else "."
         return ["php", "-S", f"{host}:{port}", "-t", target_dir]
 

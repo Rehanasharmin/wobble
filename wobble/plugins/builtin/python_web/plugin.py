@@ -72,7 +72,7 @@ try:
 
     if __name__ == "__main__":
         port = int(os.environ.get("PORT", 3000))
-        app.run(host="0.0.0.0", port=port, debug=True)
+        app.run(host=os.environ.get("WOBBLE_HOST", "127.0.0.1"), port=port, debug=True)
 
 except ImportError:
     # Fallback to standard library http.server if Flask is not installed
@@ -89,8 +89,9 @@ except ImportError:
 
     if __name__ == "__main__":
         port = int(os.environ.get("PORT", 3000))
-        print(f"Serving HTTP on 0.0.0.0 port {{port}} (Install Flask: pip install flask)...")
-        server = HTTPServer(("0.0.0.0", port), Handler)
+        host = os.environ.get("WOBBLE_HOST", "127.0.0.1")
+        print(f"Serving HTTP on {{host}} port {{port}} (Install Flask: pip install flask)...")
+        server = HTTPServer((host, port), Handler)
         server.serve_forever()
 """)
 
