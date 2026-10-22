@@ -13,7 +13,7 @@ from wobble.project.spec import ProjectSpec
 def detect_web_framework(directory: Path) -> str:
     """Determine the web framework used in the target directory."""
     # 1. Check wobble.json spec if present
-    spec = ProjectSpec.load_from_dir(directory)
+    spec = ProjectSpec.load_from_dir(directory, strict=True)
     if spec and spec.framework and spec.framework != "unknown":
         return spec.framework
 

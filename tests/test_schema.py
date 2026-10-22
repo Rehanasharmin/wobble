@@ -31,6 +31,16 @@ class TestSchema(unittest.TestCase):
         self.assertIn("android", caps["supported_frameworks"])
         self.assertIn("vite", caps["supported_frameworks"])
 
+    def test_schema_documents_error_contract_and_exit_codes(self):
+        schema = get_cli_schema()
+        handling = schema["error_handling"]
+        required = handling["json_failure_contract"]["required_fields"]
+        self.assertFalse(required["success"])
+        self.assertIn("error", required)
+        self.assertIn("error_code", required)
+        self.assertEqual(handling["exit_codes"]["2"].split()[0], "Invalid")
+        self.assertTrue(schema["capabilities"]["structured_errors"])
+
 
 if __name__ == "__main__":
     unittest.main()

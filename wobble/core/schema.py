@@ -33,11 +33,43 @@ def get_cli_schema() -> Dict[str, Any]:
             {
                 "name": "--verbose",
                 "-v": True,
-                "description": "Enable verbose execution logging",
+                "description": "Include tracebacks and exception-type diagnostics on failures",
                 "type": "boolean",
                 "default": False
             }
         ],
+        "error_handling": {
+            "json_failure_contract": {
+                "required_fields": {
+                    "success": False,
+                    "error": "Human-readable, actionable failure message",
+                    "error_code": "Stable machine-readable error identifier"
+                },
+                "optional_fields": ["hint", "details", "warnings", "errors", "stdout", "stderr", "returncode"],
+                "example": {
+                    "success": False,
+                    "error": "Port 3000 is already in use on 127.0.0.1.",
+                    "error_code": "port_in_use",
+                    "hint": "Stop the other server or try 'wob web preview --port 3001'."
+                }
+            },
+            "exit_codes": {
+                "0": "Success (or a clean cancellation where documented)",
+                "1": "Command, validation, filesystem, or unexpected runtime failure",
+                "2": "Invalid command-line arguments or invalid configuration value",
+                "124": "External command timed out (when propagated by the command)",
+                "126": "Executable exists but cannot be executed (when propagated)",
+                "127": "Required executable was not found (when propagated)",
+                "130": "Interrupted by Ctrl+C"
+            },
+            "guarantees": [
+                "Malformed arguments honor --json and never emit a Python traceback by default",
+                "A non-zero command result has a structured error or failure result",
+                "Child process output is captured rather than mixed into JSON documents",
+                "Expected errors include recovery hints when a useful remedy is known",
+                "Use --verbose for tracebacks and exception type diagnostics"
+            ]
+        },
         "commands": {
             "create": {
                 "description": "Create a new Android or Web project from built-in or plugin templates",
@@ -408,6 +440,9 @@ def get_cli_schema() -> Dict[str, Any]:
             "adb_required": False,
             "shizuku_required": False,
             "dynamic_path_detection": True,
+            "structured_errors": True,
+            "json_safe_subprocess_output": True,
+            "actionable_error_hints": True,
             "supported_frameworks": [
                 "android", "vite", "react", "vue", "svelte", "nextjs", "python_web", "php", "static_web"
             ],

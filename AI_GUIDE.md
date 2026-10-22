@@ -163,6 +163,29 @@ When an AI agent starts a session:
 
 ## 6. Error Handling & Recovery
 
+### Machine-readable failures
+
+Always check the process exit status **and** the JSON body. A failed command never requires scraping a traceback. Expected failures use:
+
+```json
+{
+  "success": false,
+  "error": "Executable not found: 'npm'. Check that it is installed and available in PATH.",
+  "error_code": "executable_not_found",
+  "hint": "Run 'wob doctor' to identify missing tools and installation commands."
+}
+```
+
+- `error` is the human-readable cause; show it to the user when appropriate.
+- `error_code` is the stable value to branch on in automation. Do not match prose.
+- `hint` is a suggested recovery, not proof that recovery succeeded.
+- `details`, `warnings`, `errors`, `stdout`, `stderr`, and `returncode` are optional context. Warnings can report successful recovery (for example, a corrupt file backed up before defaults were restored).
+- Malformed arguments also honor `--json`, return exit `2`, and include `details.usage`.
+- `--verbose` adds traceback/exception diagnostics for debugging; omit it for normal automation.
+- If a long-running command already printed a startup JSON document, a later failure document may be written to stderr so stdout remains valid JSON.
+
+Common exit statuses: `0` success; `1` operational failure; `2` invalid arguments/config values; `124` timeout; `126` permission-to-execute failure; `127` missing executable; `130` user interrupt. Build/dependency commands may wrap an external failure as exit `1` while retaining the original `returncode` in JSON.
+
 | Error Condition | Likely Cause | Recommended Agent Recovery |
 |-----------------|--------------|----------------------------|
 | Gradle build fails with OOM / Killed | Android low-memory killer killed java | Check RAM via `wob doctor --json`. Verify `gradle.properties` has `org.gradle.jvmargs=-Xmx1024m` and `--no-daemon`. |
@@ -172,6 +195,11 @@ When an AI agent starts a session:
 | Port 3000 in use | Another dev server is running | Pass `--port 3001` or let Wobble auto-discover an open port. |
 | `wob: installation is damaged` | Installed app files were deleted or modified | Run `wob self verify --json`; reinstall with `sh install.sh` or `wob self install`. |
 | `wob self verify` reports `modified`/`missing` | Tampering, interrupted write, or partial copy | Reinstall with `sh install.sh`; do not rely on the damaged runtime. |
+| `invalid_project_spec` | `wobble.json` is malformed or has invalid field types | Fix the path in `details.path`; do not run scaffolding over the existing project. |
+| `config_write_failed` / `registry_write_failed` | Read-only state, full disk, or insufficient permissions | Check the reported path, free space, and permissions. Retry only after the write can succeed. |
+| `invalid_config_value` | Port outside `1..65535` or an unrecognized boolean | Re-run `wob config set` with a valid value; the previous in-memory and on-disk values were preserved. |
+| `invalid_apk_archive` | Truncated, corrupted, or non-APK input | Rebuild or re-copy the APK; do not attempt installation of the invalid file. |
+| `clean_partial` / `apk_clean_partial` | One or more files could not be deleted | Inspect the per-path `errors` array. Do not assume the workspace is clean; fix permissions and retry. |
 | Preview works on the phone but not from a laptop | Localhost-only default | Re-run with `--lan` (trusted networks only) and use the printed `network` URL. |
 | User plugin not loading | Unsafe name, writable-by-others directory, or built-in shadowing | Check the `[!]` warning on `wob plugin list`; move it to `~/.wobble/plugins/<safe_name>/plugin.py`, `chmod 700`, and do not reuse built-in names. |
 

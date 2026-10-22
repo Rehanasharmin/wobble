@@ -107,7 +107,7 @@ Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer 
 | **Plugin system** | Frameworks are discovered as plugins under `wobble/plugins/builtin/` and user plugins under `~/.wobble/plugins/`, with alias resolution (`python` → `python_web`, `static` → `static_web`, …). Built-ins are imported by module name (fast and deterministic); user plugins must live in a private, non-world-writable directory and can never shadow a built-in. |
 | **ASCII interface** | Pure-ASCII wordmark, section rules, boxes, `[ OK ] / [WARN] / [MISS] / [FAIL]` badges, and `[####>-----]` meters. Colour is opt-out via `--no-color` or `NO_COLOR`; JSON output is never decorated. |
 | **Shell completion** | `wob completion bash` / `wob completion zsh` emit completion scripts covering commands, subcommands, and common flags; the installer places them in the standard completion directories. |
-| **Machine-readable output** | `--json` on every command; `wob schema` emits the full command/argument/capability specification for AI coding agents and scripts. |
+| **Machine-readable output** | `--json` on every command; failures include `success: false`, a stable `error_code`, an actionable message, and optional `hint`/`details`. Child-process output is captured so it cannot corrupt JSON. `wob schema` publishes the full contract. |
 | **Project registry** | `wob project list / info / open / remove` indexes projects in `~/.wobble/projects.json`, pruning stale entries automatically. |
 
 ---
@@ -120,6 +120,7 @@ Wobble is organized as a set of small, single-purpose Python packages. Subcomman
 |:---|:---|
 | `wobble/bootstrap.py` | Fast path for `--version` and the bare-command landing screen; shared by the launcher and `python -m wobble` |
 | `wobble/cli.py` | Argument parsing and command dispatch; friendly errors and exit codes |
+| `wobble/core/errors.py` | Shared expected-error types, recovery hints, exit codes, and JSON failure payloads |
 | `wobble/core/installer.py` | Standalone install/uninstall/verify/status: manifest, hashes, bytecode compilation, launcher generation |
 | `wobble/core/theme.py` | Dependency-free ASCII theme: banner, rules, boxes, badges, meters, colour detection |
 | `wobble/core/completions.py` | Bash and zsh completion scripts shared by `wob completion` and the installer |
@@ -328,11 +329,38 @@ Additional optimizations:
 ## Stability and data safety
 
 - **Atomic writes.** Configuration, the project registry, and `wobble.json` specs are written to a temporary file and renamed into place, so an interrupted write cannot truncate them.
-- **Corruption recovery.** An unreadable `config.json` is preserved as `config.json.corrupt.bak` before defaults are restored — user data is never silently destroyed.
-- **Timeouts on all subprocesses.** External tools run with bounded timeouts and are killed cleanly on interrupt; a failed or missing executable produces a clear error (exit 127) rather than a traceback.
-- **Graceful interrupts.** `Ctrl+C` terminates child processes, exits with status 130, and never leaves detached Gradle or dev-server processes behind.
-- **Defensive registry handling.** Stale project entries are pruned in a single batched write; malformed registry entries are ignored instead of crashing the tool.
-- **Strict input validation.** Project names must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` and Android package IDs must be reverse-DNS identifiers. This prevents path traversal and template injection into generated Gradle, XML, HTML, and JSON files; scaffolding into a symlink is refused.
+- **Non-destructive corruption recovery.** Invalid JSON is preserved before defaults are restored. Existing `.corrupt.bak` files are never overwritten; later backups use a numeric suffix. Failure to preserve the original stops recovery rather than risking data loss.
+- **No silent persistence failures.** Configuration and registry write errors are raised with the affected path and a permissions/disk-space hint. In-memory configuration changes roll back if the disk write fails. CLI values arrive as strings; known port and boolean settings are validated and coerced before saving.
+- **Specific subprocess failures.** Missing executables produce 127, non-executable files 126, timeouts 124, and interrupts 130. Results include an `error_code`, partial output where available, and a recovery hint; invalid working directories are identified before launch.
+- **Graceful interrupts.** `Ctrl+C` terminates the child process group, exits with status 130, and escalates cleanup if a child does not stop promptly. Finite commands have timeouts; interactive servers intentionally run until stopped.
+- **Defensive project state.** Stale registry entries are pruned in a batched write, malformed entries are ignored, and a malformed `wobble.json` produces an explicit repair error instead of being misreported as “no project found.”
+- **Honest partial completion.** Cleanup reports every path it could not remove and exits non-zero. Project creation can succeed with an explicit registry warning rather than falsely reporting that scaffolding failed.
+- **Strict input validation.** Project names must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, Android package IDs must be reverse-DNS identifiers, and TCP ports must be in `1..65535`. Scaffolding into a symlink is refused.
+
+### Error output and exit codes
+
+Human errors include a concise cause and, when known, a `Hint:` with the next recovery step. Tracebacks are opt-in through `--verbose`. In JSON mode, argument errors and expected runtime errors use the same machine-readable contract:
+
+```json
+{
+  "success": false,
+  "error": "Port 3000 is already in use on 127.0.0.1.",
+  "error_code": "port_in_use",
+  "hint": "Stop the other server or try 'wob web preview --port 3001'."
+}
+```
+
+`error_code` is stable for scripts; `details` may add the path, port, usage, or exception type. Domain commands may additionally include `stdout`, `stderr`, `returncode`, recovery `warnings`, and per-file `errors`. A long-running command that already emitted a startup document writes any later error document to stderr, keeping stdout parseable.
+
+| Exit | Meaning |
+|---:|:---|
+| `0` | Success, or a documented clean cancellation |
+| `1` | Operational, validation, filesystem, or unexpected runtime failure |
+| `2` | Invalid CLI arguments or configuration value |
+| `124` | External command timeout, when propagated by the command |
+| `126` | Executable permission failure, when propagated |
+| `127` | Required executable not found, when propagated |
+| `130` | Interrupted by `Ctrl+C` |
 
 ### Security hardening (1.2.0)
 
@@ -345,7 +373,7 @@ Additional optimizations:
 - **Keystore passwords are not argv.** `wob apk sign` passes credentials to `apksigner` through `WOBBLE_KS_PASS` (`env:` protocol), so they do not appear in `ps` output.
 - **Installation integrity.** The installer writes a SHA-256 manifest and `wob self verify` re-hashes the installed tree. `wob self status` reports whether the runtime is source-independent, and the launcher refuses to run from a damaged app directory with a clear reinstall message.
 - **Safer uninstall.** Uninstall removes only files that carry Wobble's generated-launcher marker or completion signature; foreign executables are reported and kept. Project directories are never touched; config is kept unless `--purge` is given.
-- **Full test coverage.** 128 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON output, installer isolation, preview security, plugin trust rules, input validation, and the safety properties above.
+- **Full test coverage.** 161 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON success/error contracts, installer isolation, preview security, plugin trust rules, persistence recovery, partial failures, input validation, and the safety properties above.
 
 ---
 
@@ -385,7 +413,7 @@ Conventions for agents (`AI_GUIDE.md`):
 ```bash
 git clone https://github.com/Rehanasharmin/wobble.git
 cd wobble
-python3 tests/run_tests.py     # 128 tests, <1 s, standard library only
+python3 tests/run_tests.py     # 161 tests, standard library only
 sh install.sh                  # install the standalone application
 ```
 

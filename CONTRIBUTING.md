@@ -7,7 +7,8 @@ Thank you for your interest in making Termux a first-class mobile development wo
 1. **Lightweight & Portable**: Wobble uses Python's standard library with zero external pip dependencies for its core CLI. This guarantees instant installation on any ARM64, ARM, or x86 Android device without pip wheel compilation errors.
 2. **Honest Capabilities**: Never fake functionality. If an Android feature requires a specific tool, permission, or user action, diagnose it clearly and explain the workaround.
 3. **No Root Requirement**: Wobble must remain 100% usable on non-rooted production Android devices.
-4. **AI-Friendly Interfaces**: Always support `--json` structured outputs for machine parsing.
+4. **AI-Friendly Interfaces**: Always support `--json` structured outputs for machine parsing, including failures.
+5. **No Silent Failures**: Raise an expected `WobbleError` with a stable `error_code` and useful recovery hint, or return a structured failure result. Never swallow a write/delete error and then report success. Add a regression test for every corrected error path.
 
 ## 2. Directory Layout
 
@@ -17,13 +18,13 @@ wobble/
 ├── wobble/
 │   ├── bootstrap.py      # --version / landing fast path
 │   ├── cli.py            # argparse definitions and command dispatch
-│   ├── core/             # installer, theme, completions, context, logger, executor, doctor, schema, config
+│   ├── core/             # errors, installer, theme, context, logger, executor, doctor, schema, config
 │   ├── project/          # Project manager, wobble.json specification
 │   ├── android/          # Native Android build coordinator, APK inspector & installer
 │   ├── web/              # Web dev servers, framework detection, hardened preview
 │   ├── deps/             # Unified package manager routing
 │   └── plugins/          # Plugin loader, BasePlugin, built-in framework plugins
-├── tests/                # Automated unit test suite (128 tests, <1 s)
+├── tests/                # Automated unit test suite (161 tests, standard library only)
 ├── docs/                 # In-depth architectural & workflow guides
 ├── install.sh            # Standalone installer (copy + manifest + launcher)
 └── uninstall.sh          # Standalone uninstaller (projects preserved)
@@ -61,8 +62,8 @@ python3 tests/run_tests.py
 All tests must pass before submitting a pull request. Security-sensitive changes
 (input validation, preview routing, installer file handling, plugin loading,
 subprocess execution) need a regression test in `tests/test_hardening.py`,
-`tests/test_preview_security.py`, `tests/test_installer.py`, or
-`tests/test_plugins.py`.
+`tests/test_error_handling.py`, `tests/test_preview_security.py`,
+`tests/test_installer.py`, or `tests/test_plugins.py`.
 
 Verify the standalone installer as well:
 

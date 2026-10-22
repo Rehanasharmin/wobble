@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from wobble.core.context import get_lan_ip
+from wobble.core.errors import PreviewError
 from wobble.core.logger import get_logger
 from wobble.core import theme
 
@@ -139,23 +140,41 @@ def _accepted(request_headers, encoding: str) -> bool:
     return encoding in value.lower()
 
 
-def start_static_preview(directory: Path, port: Optional[int] = None, host: str = "127.0.0.1"):
-    """
-    Launch a lightweight, zero-dependency static preview server.
-    Displays localhost and optional LAN URLs for cross-device testing.
-    """
+def start_static_preview(directory: Path, port: Optional[int] = None, host: str = "127.0.0.1") -> int:
+    """Serve a directory, returning an exit code and raising startup failures."""
     logger = get_logger()
-    serve_root = Path(directory).resolve()
+    serve_root = Path(directory).expanduser().resolve()
+    if not serve_root.exists():
+        raise PreviewError(
+            f"Preview directory does not exist: {serve_root}",
+            code="preview_directory_not_found",
+            hint="Check --dir or build the project before starting the preview.",
+            details={"directory": str(serve_root)},
+        )
+    if not serve_root.is_dir():
+        raise PreviewError(
+            f"Preview path is not a directory: {serve_root}",
+            code="invalid_preview_directory",
+            details={"directory": str(serve_root)},
+        )
     serve_dir = str(serve_root)
 
     # Explicit ports must be honored exactly; auto mode picks the next free one.
-    if port:
+    if port is not None:
+        if not 1 <= port <= 65535:
+            raise PreviewError(
+                f"Invalid TCP port {port}; expected 1-65535.",
+                code="invalid_port", exit_code=2,
+            )
         actual_port = port
     else:
         free = find_free_port(3000)
         if free is None:
-            logger.error("No free TCP port found in range 3000-3050. Close other servers and retry.")
-            return
+            raise PreviewError(
+                "No free TCP port found in range 3000-3049.",
+                code="no_free_port",
+                hint="Close another server or choose an explicit port with --port.",
+            )
         actual_port = free
 
     lan_ip = get_lan_ip()
@@ -307,15 +326,21 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
 
     try:
         httpd = _ThreadingHTTPServer((host, actual_port), WobblePreviewHandler)
-    except OSError as e:
-        if getattr(e, "errno", None) in (98, 48, 10048):  # address already in use
-            logger.error(
-                f"Port {actual_port} is already in use. "
-                f"Try 'wob web preview -p {actual_port + 1}' or stop the other server."
-            )
-        else:
-            logger.error(f"Failed to start web server on port {actual_port}: {e}")
-        return
+    except OSError as exc:
+        if getattr(exc, "errno", None) in (98, 48, 10048):  # address already in use
+            next_port = actual_port + 1 if actual_port < 65535 else 3000
+            raise PreviewError(
+                f"Port {actual_port} is already in use on {host}.",
+                code="port_in_use",
+                hint=f"Stop the other server or try 'wob web preview --port {next_port}'.",
+                details={"host": host, "port": actual_port},
+            ) from exc
+        raise PreviewError(
+            f"Cannot start web server on {host}:{actual_port}: {exc}",
+            code="preview_bind_failed",
+            hint="Check the host address and your network/port permissions.",
+            details={"host": host, "port": actual_port},
+        ) from exc
 
     try:
         with httpd:
@@ -361,5 +386,11 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
             httpd.serve_forever()
     except KeyboardInterrupt:
         logger.info("Web preview server stopped.")
-    except Exception as e:
-        logger.error(f"Web server error on port {actual_port}: {e}")
+        return 130
+    except Exception as exc:
+        raise PreviewError(
+            f"Web server failed on port {actual_port}: {exc}",
+            code="preview_runtime_failed",
+            details={"host": host, "port": actual_port},
+        ) from exc
+    return 0

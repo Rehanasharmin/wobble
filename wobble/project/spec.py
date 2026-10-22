@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from datetime import datetime, timezone
 from wobble import __version__
+from wobble.core.errors import ProjectSpecError
 from wobble.core.fsutil import atomic_write_json
 
 PROJECT_SPEC_FILENAME = "wobble.json"
@@ -61,16 +62,39 @@ class ProjectSpec:
 
     def save(self, filepath: Optional[Path] = None):
         target = filepath or (self.path / PROJECT_SPEC_FILENAME)
-        atomic_write_json(target, self.to_dict())
+        try:
+            atomic_write_json(target, self.to_dict())
+        except Exception as exc:
+            raise ProjectSpecError(
+                f"Cannot save project specification '{target}': {exc}",
+                code="project_spec_write_failed",
+                hint="Check the project directory permissions and available disk space.",
+                details={"path": str(target)},
+            ) from exc
 
     @classmethod
-    def load_from_dir(cls, directory: Path) -> Optional["ProjectSpec"]:
-        spec_path = Path(directory) / PROJECT_SPEC_FILENAME
+    def load_from_dir(cls, directory: Path, *, strict: bool = False) -> Optional["ProjectSpec"]:
+        """Load a project spec, optionally reporting malformed files.
+
+        Directory scans stay tolerant by default. Commands operating on the
+        current project use ``strict=True`` so a broken wobble.json is not
+        misreported as "no project found".
+        """
+        directory = Path(directory)
+        spec_path = directory / PROJECT_SPEC_FILENAME
         if not spec_path.exists():
             return None
         try:
-            with open(spec_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with spec_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                raise ValueError("project specification root must be a JSON object")
+            for key in ("name", "type", "framework"):
+                if key in data and not isinstance(data[key], str):
+                    raise ValueError(f"'{key}' must be a string")
+            for key in ("scripts", "dependencies"):
+                if key in data and not isinstance(data[key], dict):
+                    raise ValueError(f"'{key}' must be a JSON object")
             spec = cls(
                 name=data.get("name", directory.name),
                 project_type=data.get("type", "web"),
@@ -85,5 +109,11 @@ class ProjectSpec:
             spec.created_at = data.get("created_at", spec.created_at)
             spec.wobble_version = data.get("wobble_version", spec.wobble_version)
             return spec
-        except Exception:
+        except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
+            if strict:
+                raise ProjectSpecError(
+                    f"Cannot load project specification '{spec_path}': {exc}",
+                    hint="Fix the JSON in wobble.json, or restore it from a known-good copy.",
+                    details={"path": str(spec_path)},
+                ) from exc
             return None

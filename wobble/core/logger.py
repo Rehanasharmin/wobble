@@ -18,6 +18,13 @@ class Logger:
     def __init__(self, json_mode: bool = False, no_color: bool = False):
         self.json_mode = json_mode
         self.use_color = theme.color_enabled(no_color=no_color, json_mode=json_mode)
+        # JSON errors are emitted once by the CLI boundary. Keeping them here
+        # prevents a failed command from exiting non-zero with no JSON at all,
+        # while ``_json_emitted`` avoids duplicate documents when a handler has
+        # already returned a structured failure result.
+        self.errors = []
+        self.warnings = []
+        self._json_emitted = False
 
     # -- primitives --------------------------------------------------------
     def _paint(self, text: str, *styles: str) -> str:
@@ -32,10 +39,12 @@ class Logger:
             print(f"{self._paint(prefix, theme.GREEN, theme.BOLD)} {msg}")
 
     def warn(self, msg: str, prefix: str = "[!]"):
+        self.warnings.append(str(msg))
         if not self.json_mode:
             print(f"{self._paint(prefix, theme.YELLOW, theme.BOLD)} {msg}")
 
     def error(self, msg: str, prefix: str = "[x]"):
+        self.errors.append(str(msg))
         if not self.json_mode:
             print(f"{self._paint(prefix, theme.RED, theme.BOLD)} {msg}", file=sys.stderr)
 
@@ -88,8 +97,23 @@ class Logger:
             print(f"  {label} {bar}" if label else f"  {bar}")
 
     def json_output(self, data: Any):
-        """Serialize data to stdout as formatted JSON."""
-        print(json.dumps(data, indent=2, default=str))
+        """Serialize one JSON document and normalize legacy failure results."""
+        if isinstance(data, dict):
+            data = dict(data)
+            if data.get("success") is False and data.get("error") and "error_code" not in data:
+                # Older domain handlers return useful failure dictionaries but
+                # do not all know about the shared error contract.
+                data["error_code"] = "command_failed"
+            if self.warnings:
+                existing = data.get("warnings", [])
+                if not isinstance(existing, list):
+                    existing = [str(existing)]
+                data["warnings"] = existing + [
+                    warning for warning in self.warnings if warning not in existing
+                ]
+        rendered = json.dumps(data, indent=2, default=str)
+        self._json_emitted = True
+        print(rendered)
 
 
 # Global default logger instance
