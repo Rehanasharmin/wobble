@@ -143,7 +143,8 @@ def get_cli_schema() -> Dict[str, Any]:
                         "description": "Start the project framework development server (e.g. vite dev, npm run dev, flask run)",
                         "flags": [
                             {"name": "--port", "-p": True, "type": "integer", "description": "Port number to listen on"},
-                            {"name": "--host", "type": "string", "default": "0.0.0.0", "description": "Network interface to bind"}
+                            {"name": "--host", "type": "string", "default": "127.0.0.1", "description": "Network interface to bind (localhost by default)"},
+                            {"name": "--lan", "type": "boolean", "default": False, "description": "Expose the dev server on the LAN (equivalent to --host 0.0.0.0)"}
                         ]
                     },
                     "build": {
@@ -153,16 +154,20 @@ def get_cli_schema() -> Dict[str, Any]:
                         "description": "Run the project test suite"
                     },
                     "preview": {
-                        "description": "Launch local development preview server and display both localhost and LAN URLs for phone/multi-device testing",
+                        "description": "Launch the hardened preview server; localhost by default, --lan also prints a LAN URL",
                         "flags": [
                             {"name": "--port", "-p": True, "type": "integer", "description": "Port to serve preview on"},
-                            {"name": "--dir", "type": "string", "description": "Directory to serve (defaults to project root or dist/build)"}
+                            {"name": "--dir", "type": "string", "description": "Directory to serve (defaults to project root or dist/build)"},
+                            {"name": "--host", "type": "string", "default": "127.0.0.1", "description": "Network interface to bind"},
+                            {"name": "--lan", "type": "boolean", "default": False, "description": "Expose the preview on the LAN (0.0.0.0)"}
                         ]
                     },
                     "serve": {
                         "description": "Serve static build folder via zero-dependency HTTP server",
                         "flags": [
-                            {"name": "--port", "-p": True, "type": "integer", "description": "Port to serve on"}
+                            {"name": "--port", "-p": True, "type": "integer", "description": "Port to serve on"},
+                            {"name": "--host", "type": "string", "default": "127.0.0.1", "description": "Network interface to bind"},
+                            {"name": "--lan", "type": "boolean", "default": False, "description": "Expose the server on the LAN (0.0.0.0)"}
                         ]
                     }
                 }
@@ -259,7 +264,8 @@ def get_cli_schema() -> Dict[str, Any]:
             "doctor": {
                 "description": "Comprehensive environment health check (Android, Termux, storage, memory, SDK, JDK, tools, PATH)",
                 "flags": [
-                    {"name": "--json", "type": "boolean", "description": "Return health check as JSON object"}
+                    {"name": "--json", "type": "boolean", "description": "Return health check as JSON object"},
+                    {"name": "--quick", "type": "boolean", "default": False, "description": "Skip slow tool version probes (much faster)"}
                 ]
             },
             "plugin": {
@@ -309,6 +315,91 @@ def get_cli_schema() -> Dict[str, Any]:
                 "arguments": [
                     {"name": "shell", "type": "string", "required": False, "choices": ["bash", "zsh"], "default": "bash", "description": "Shell to generate a completion script for"}
                 ]
+            },
+            "self": {
+                "description": "Manage the standalone Wobble installation itself",
+                "subcommands": {
+                    "status": {"description": "Show whether Wobble runs standalone or from a source checkout"},
+                    "verify": {"description": "Verify installed files against the install manifest hashes"},
+                    "install": {
+                        "description": "Install a standalone, source-independent copy of Wobble",
+                        "flags": [
+                            {"name": "--root", "type": "string", "description": "Install directory (default: ~/.local/share/wobble)"},
+                            {"name": "--bin", "type": "string", "description": "Launcher directory (default: ~/.local/bin)"},
+                            {"name": "--force", "type": "boolean", "default": False, "description": "Replace an existing foreign wob executable"},
+                            {"name": "--no-completion", "type": "boolean", "default": False, "description": "Do not install shell completions"},
+                            {"name": "--no-path", "type": "boolean", "default": False, "description": "Do not edit shell startup files"}
+                        ]
+                    },
+                    "uninstall": {
+                        "description": "Remove the installed runtime and launchers (projects are never touched)",
+                        "flags": [
+                            {"name": "--root", "type": "string", "description": "Install directory"},
+                            {"name": "--purge", "type": "boolean", "default": False, "description": "Also remove ~/.wobble and ~/.config/wobble"},
+                            {"name": "--yes", "type": "boolean", "default": False, "description": "Skip confirmation"}
+                        ]
+                    }
+                }
+            },
+            "install": {
+                "description": "Alias for `wob self install`: install Wobble as standalone software",
+                "flags": [
+                    {"name": "--root", "type": "string", "description": "Install directory"},
+                    {"name": "--bin", "type": "string", "description": "Launcher directory"},
+                    {"name": "--force", "type": "boolean", "default": False},
+                    {"name": "--no-completion", "type": "boolean", "default": False},
+                    {"name": "--no-path", "type": "boolean", "default": False}
+                ]
+            },
+            "uninstall": {
+                "description": "Alias for `wob self uninstall`: remove Wobble from this system",
+                "flags": [
+                    {"name": "--root", "type": "string", "description": "Install directory"},
+                    {"name": "--purge", "type": "boolean", "default": False},
+                    {"name": "--yes", "type": "boolean", "default": False}
+                ]
+            },
+            "banner": {
+                "description": "Print the Wobble ASCII wordmark (also available as JSON)",
+                "flags": []
+            },
+            "about": {
+                "description": "Show version, install mode, source independence, architecture, and paths",
+                "flags": []
+            },
+            "version": {
+                "description": "Print the Wobble version (same as --version; handled by the fast path)",
+                "flags": ["--json"]
+            },
+            "help": {
+                "description": "Show the full help text (same as --help)",
+                "flags": []
+            },
+            "update": {
+                "description": "Show the installed version, install mode, and upgrade command",
+                "flags": []
+            },
+            "build": {
+                "description": "Build the current project (Android APK or production web bundle)",
+                "flags": [
+                    {"name": "--release", "type": "boolean", "default": False, "description": "Build a release APK"}
+                ]
+            },
+            "dev": {
+                "description": "Start the dev server for the current project (localhost by default)",
+                "flags": [
+                    {"name": "--port", "-p": True, "type": "integer", "description": "Port to listen on"},
+                    {"name": "--host", "type": "string", "default": "127.0.0.1"},
+                    {"name": "--lan", "type": "boolean", "default": False, "description": "Expose on LAN"}
+                ]
+            },
+            "preview": {
+                "description": "Preview the current project locally, optionally on the LAN",
+                "flags": [
+                    {"name": "--port", "-p": True, "type": "integer", "description": "Port to listen on"},
+                    {"name": "--host", "type": "string", "default": "127.0.0.1"},
+                    {"name": "--lan", "type": "boolean", "default": False, "description": "Expose on LAN"}
+                ]
             }
         },
         "capabilities": {
@@ -328,7 +419,23 @@ def get_cli_schema() -> Dict[str, Any]:
                 "aapt_support": True,
                 "install_methods": ["termux-open", "am", "adb"]
             },
-            "lan_ip_detection": True
+            "lan_ip_detection": True,
+            "standalone_install": True,
+            "source_independent_runtime": True,
+            "preview_security": {
+                "localhost_default": True,
+                "dotfiles_blocked": True,
+                "secret_files_blocked": True,
+                "directory_listing": False,
+                "symlink_escape_blocked": True,
+                "gzip": True
+            },
+            "installer": {
+                "manifest": "install.json",
+                "default_root": "~/.local/share/wobble",
+                "default_launcher": "~/.local/bin/wob",
+                "precompiled_bytecode": True
+            }
         },
         "environment": get_full_environment_report()
     }

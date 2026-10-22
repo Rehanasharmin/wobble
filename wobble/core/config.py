@@ -3,9 +3,10 @@ Wobble Configuration System
 Manages persistent user settings in ~/.config/wobble/config.json.
 """
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional
 from wobble.core.context import get_wobble_config_path, get_wobble_home
 from wobble.core.fsutil import atomic_write_json, backup_corrupted_file
 

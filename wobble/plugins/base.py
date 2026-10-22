@@ -4,9 +4,10 @@ Defines the contract for framework plugins to implement project creation, detect
 development, build, test, run, and cleanup commands.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Dict, Any, Optional
 
 
 class BasePlugin(ABC):

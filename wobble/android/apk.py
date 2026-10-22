@@ -355,7 +355,6 @@ def sign_apk(
     path = Path(apk_path).resolve()
     if not path.is_file():
         return {"success": False, "error": f"APK file not found: {path}"}
-
     apksigner_bin = find_tool("apksigner")
     if not apksigner_bin:
         return {
@@ -365,6 +364,11 @@ def sign_apk(
 
     from wobble.core.context import get_wobble_home
     keystore_path = keystore
+    if keystore_path and not key_pass:
+        # The documented, non-argv way to supply a keystore password. Applies
+        # only to user keystores; the generated debug keystore always uses the
+        # conventional "android" password below.
+        key_pass = os.environ.get("WOBBLE_KS_PASS") or None
     if not keystore_path:
         default_ks = get_wobble_home() / "debug.keystore"
         if not default_ks.exists():
@@ -397,15 +401,21 @@ def sign_apk(
         key_alias = key_alias or "androiddebugkey"
         key_pass = key_pass or "android"
 
+    # Never put a keystore password on the command line: `ps` would expose it to
+    # every other app on the device. apksigner can read credentials from env.
     sign_cmd = [
         apksigner_bin, "sign",
         "--ks", str(keystore_path),
-        "--ks-pass", f"pass:{key_pass}",
         "--ks-key-alias", key_alias or "androiddebugkey",
-        str(path)
     ]
+    sign_env = {}
+    if key_pass:
+        sign_env["WOBBLE_KS_PASS"] = key_pass
+        sign_cmd.extend(["--ks-pass", "env:WOBBLE_KS_PASS",
+                         "--key-pass", "env:WOBBLE_KS_PASS"])
+    sign_cmd.append(str(path))
 
-    res = run_command(sign_cmd, timeout=30)
+    res = run_command(sign_cmd, timeout=30, env=sign_env)
     if res.success:
         return {
             "success": True,

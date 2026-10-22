@@ -14,7 +14,7 @@ from wobble.web.detector import detect_web_framework
 from wobble.web.preview import start_static_preview, find_free_port
 
 
-def run_web_dev(project_path: Path, port: Optional[int] = None, host: str = "0.0.0.0") -> int:
+def run_web_dev(project_path: Path, port: Optional[int] = None, host: str = "127.0.0.1") -> int:
     """Launch framework development server or fallback to static preview."""
     logger = get_logger()
     fw = detect_web_framework(project_path)
@@ -28,10 +28,17 @@ def run_web_dev(project_path: Path, port: Optional[int] = None, host: str = "0.0
         if cmd:
             logger.heading(f"Starting {plugin.name} Dev Server")
             logger.detail("Local URL", f"http://localhost:{target_port}/")
-            if lan_ip and lan_ip != "127.0.0.1":
-                logger.detail("Network LAN URL", f"http://{lan_ip}:{target_port}/")
+            lan_exposed = host not in ("127.0.0.1", "localhost", "::1")
+            if lan_exposed:
+                if lan_ip and lan_ip != "127.0.0.1":
+                    logger.detail("Network LAN URL", f"http://{lan_ip}:{target_port}/")
+                logger.warn("Dev server is exposed on your LAN. Stop it when you leave this network.")
+            else:
+                logger.detail("LAN access", "off (use --lan to enable)")
             logger.step(f"Running: {' '.join(cmd)}")
-            return stream_command(cmd, cwd=project_path)
+            # Framework scripts (notably the generated Flask app) read these.
+            extra_env = {"PORT": str(target_port), "WOBBLE_HOST": host}
+            return stream_command(cmd, cwd=project_path, env=extra_env)
 
     # Fallback to static preview
     logger.info(f"Framework '{fw}' has no dev server script. Launching Wobble web preview...")
@@ -83,7 +90,8 @@ def run_web_test(project_path: Path) -> Dict[str, Any]:
     }
 
 
-def run_web_preview(project_path: Path, port: Optional[int] = None, target_sub_dir: Optional[str] = None):
+def run_web_preview(project_path: Path, port: Optional[int] = None, target_sub_dir: Optional[str] = None,
+                    host: str = "127.0.0.1"):
     """
     Preview the project. Checks for build output folders (dist, build, out, public)
     or serves root directory.
@@ -97,8 +105,12 @@ def run_web_preview(project_path: Path, port: Optional[int] = None, target_sub_d
         # Check standard build output directories
         for build_folder in ["dist", "build", "out", "public"]:
             candidate = project_path / build_folder
-            if candidate.is_dir() and any(candidate.iterdir()):
+            try:
+                populated = candidate.is_dir() and any(candidate.iterdir())
+            except OSError:
+                populated = False
+            if populated:
                 serve_dir = candidate
                 break
 
-    start_static_preview(serve_dir, port)
+    start_static_preview(serve_dir, port, host)

@@ -1,53 +1,75 @@
 #!/usr/bin/env sh
-# Wobble (wob) CLI Launcher
-# Portable bootstrap for Termux and Linux environments
+# ============================================================================
+#  Wobble development launcher (source checkout)
+#
+#  This launcher runs Wobble directly from this checkout and is meant for
+#  development / testing. For a standalone install that keeps working after
+#  the checkout is deleted, run:  sh install.sh
+#
+#  Zero fork()s on the hot path: no ls/expr/dirname/pwd subshells.
+# ============================================================================
+set -eu
 
-set -e
-
-# Resolve script directory (handling symlinks)
 PRG="$0"
-while [ -h "$PRG" ]; do
-    ls=`ls -ld "$PRG"`
-    link=`expr "$ls" : '.*-> \(.*\)$'`
-    if expr "$link" : '/.*' > /dev/null; then
-        PRG="$link"
-    else
-        PRG=`dirname "$PRG"`"/$link"
-    fi
-done
-WOBBLE_BIN_DIR=`dirname "$PRG"`
-WOBBLE_ROOT=`cd "$WOBBLE_BIN_DIR/.." >/dev/null 2>&1 && pwd`
 
-# Check for Python 3
+# When started through PATH, $0 is just "wob"; ask the shell where it lives.
+case "$PRG" in
+    */*) ;;
+    *)   FOUND=$(command -v -- "$PRG" 2>/dev/null || true)
+         [ -n "$FOUND" ] && PRG="$FOUND" ;;
+esac
+
+# Resolve symlinks only when this script actually is one (legacy installs).
+while [ -h "$PRG" ]; do
+    LINK=$(readlink "$PRG" 2>/dev/null || true)
+    [ -n "$LINK" ] || break
+    case "$LINK" in
+        /*) PRG="$LINK" ;;
+        *)  case "$PRG" in
+                */*) PRG="${PRG%/*}/$LINK" ;;
+                *)   PRG="$LINK" ;;
+            esac ;;
+    esac
+done
+
+case "$PRG" in
+    */*) BIN_DIR="${PRG%/*}" ;;
+    *)   BIN_DIR="." ;;
+esac
+
+# Make BIN_DIR absolute without spawning `pwd`.
+case "$BIN_DIR" in
+    /*) ;;
+    *)  BIN_DIR="$PWD/$BIN_DIR" ;;
+esac
+# Normalise a trailing "/." or "/"
+BIN_DIR="${BIN_DIR%/.}"
+BIN_DIR="${BIN_DIR%/}"
+ROOT="${BIN_DIR%/*}"
+
+if [ ! -f "$ROOT/wobble/cli.py" ]; then
+    echo "wob: cannot find the Wobble package next to this launcher." >&2
+    echo "wob: install Wobble as software with: sh install.sh" >&2
+    exit 127
+fi
+
 PYTHON_BIN=""
-if command -v python3 >/dev/null 2>&1; then
+if [ -n "${WOBBLE_PYTHON:-}" ] && [ -x "${WOBBLE_PYTHON}" ]; then
+    PYTHON_BIN="$WOBBLE_PYTHON"
+elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
 elif command -v python >/dev/null 2>&1; then
     PYTHON_BIN="python"
-elif [ -x "/data/data/com.termux/files/usr/bin/python3" ]; then
-    PYTHON_BIN="/data/data/com.termux/files/usr/bin/python3"
-elif [ -x "$PREFIX/bin/python3" ]; then
+elif [ -x "${PREFIX:-/nonexistent}/bin/python3" ]; then
     PYTHON_BIN="$PREFIX/bin/python3"
+else
+    echo "wob: Python 3 is required but was not found in PATH." >&2
+    echo "wob: install it with: pkg install -y python" >&2
+    exit 127
 fi
 
-if [ -z "$PYTHON_BIN" ]; then
-    echo "\033[33m[Wobble Bootstrap]\033[0m Python 3 is required to run Wobble."
-    if command -v pkg >/dev/null 2>&1; then
-        echo "Installing Python 3 via Termux package manager (pkg install -y python)..."
-        pkg install -y python
-        PYTHON_BIN="python3"
-    elif command -v apt-get >/dev/null 2>&1; then
-        echo "Installing Python 3 via apt-get..."
-        apt-get update && apt-get install -y python3
-        PYTHON_BIN="python3"
-    else
-        echo "\033[31mError:\033[0m Could not locate or install Python 3. Please install Python 3 manually."
-        exit 127
-    fi
-fi
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-# Ensure Wobble root is in PYTHONPATH
-export PYTHONPATH="$WOBBLE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
-
-# Execute Wobble CLI and forward all arguments & exit code
-exec "$PYTHON_BIN" -m wobble.cli "$@"
+# `python -m wobble` goes through the fast bootstrap, so `wob --version` skips
+# argparse and every subcommand module.
+exec "$PYTHON_BIN" -m wobble "$@"

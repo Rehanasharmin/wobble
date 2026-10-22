@@ -28,14 +28,50 @@ Or use the shortcut:
 wob preview
 ```
 
-### Localhost & LAN Wi-Fi Testing:
-Wobble detects your phone's active Wi-Fi LAN address dynamically:
+### Localhost & LAN Wi-Fi testing
+
+Previews bind to `127.0.0.1` by default, which is the safe choice on public or
+shared Wi-Fi. The startup card is pure ASCII:
+
 ```
-⚡ WOBBLE WEB PREVIEW RUNNING
-➜ Local:    http://localhost:3000/
-➜ Network:  http://192.168.1.45:3000/
++--[ web preview ]-----------------------------------------------+
+directory:   /data/data/com.termux/files/home/myapp
+local:       http://localhost:3000/
++----------------------------------------------------------------+
+  Locked to localhost. To test from another device: wob preview --lan
+  Secrets (.env, .git, keys) and directory listings are always blocked.
+  Press Ctrl+C to stop.
 ```
-You can preview the site directly in Chrome/Firefox on Android via `http://localhost:3000/`, or enter `http://192.168.1.45:3000/` into a browser on your laptop or tablet on the same Wi-Fi.
+
+To test from a laptop or tablet on the same Wi-Fi, opt in explicitly:
+
+```bash
+wob web preview --lan
+```
+
+Wobble detects the phone's LAN address, prints it, and warns that the files are
+exposed to the local network:
+
+```
+network:     http://192.168.1.45:3000/
+  [!] LAN exposure is ON: anyone on this Wi-Fi can read these files.
+      Use 'wob preview' (without --lan) on public networks.
+```
+
+The same flag works for framework dev servers (`wob web dev --lan`,
+`wob dev --lan`) and for the plain file server (`wob web serve --lan`).
+
+Regardless of the bind address, the preview server refuses to serve:
+
+- dotfiles and directories such as `.git`, `.env*`, `.npmrc`, `.netrc`;
+- credential material such as `*.pem`, `*.key`, `*.jks`, `*.keystore`,
+  `id_rsa*`, `local.properties`, `debug.keystore`;
+- directory listings (an ASCII 404 card is returned instead);
+- `..` traversal, percent-encoded traversal, and symlinks that escape the
+  project root.
+
+Text assets are gzip-compressed with a small in-memory cache, and HTTP/1.1
+keep-alive is enabled so pages with many small assets load quickly.
 
 ---
 

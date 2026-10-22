@@ -97,7 +97,7 @@ build/
 
     def get_dev_command(self, project_path: Path, options: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
         port = (options or {}).get("port", 3000)
-        host = (options or {}).get("host", "0.0.0.0")
+        host = (options or {}).get("host", "127.0.0.1")
         return ["npx", "next", "dev", "-H", host, "-p", str(port)]
 
     def get_build_command(self, project_path: Path, options: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
@@ -105,5 +105,5 @@ build/
 
     def get_run_command(self, project_path: Path, options: Optional[Dict[str, Any]] = None) -> Optional[List[str]]:
         port = (options or {}).get("port", 3000)
-        host = (options or {}).get("host", "0.0.0.0")
+        host = (options or {}).get("host", "127.0.0.1")
         return ["npx", "next", "start", "-H", host, "-p", str(port)]

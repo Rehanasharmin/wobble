@@ -29,6 +29,8 @@ from wobble.core.context import (
     get_lan_ip
 )
 from wobble.core.executor import run_command
+from wobble.core import theme
+from wobble.core.logger import get_logger
 
 
 class CheckResult:
@@ -103,8 +105,8 @@ def check_tools_parallel(checks: Dict[str, Tuple[Optional[str], str]]) -> Dict[s
     return results
 
 
-def inspect_environment() -> List[CheckResult]:
-    """Run all diagnostic checks across the system."""
+def inspect_environment(quick: bool = False) -> List[CheckResult]:
+    """Run all diagnostic checks across the system (quick skips version probes)."""
     results: List[CheckResult] = []
 
     # 1. Environment & Architecture
@@ -226,16 +228,29 @@ def inspect_environment() -> List[CheckResult]:
     gradle_bin = find_tool("gradle")
     adb_bin = find_tool("adb")
 
-    versions = check_tools_parallel({
-        "git": (git_bin, "--version"),
-        "python": (py_bin, "--version"),
-        "node": (node_bin, "--version"),
-        "npm": (npm_bin, "--version"),
-        "php": (php_bin, "--version"),
-        "java": (java_bin, "-version"),
-        "gradle": (gradle_bin, "--version"),
-        "adb": (adb_bin, "version"),
-    })
+    if quick:
+        # Fast mode: report resolved paths instead of spawning 8 subprocesses.
+        versions = {
+            "git": (bool(git_bin), git_bin or ""),
+            "python": (bool(py_bin), py_bin or ""),
+            "node": (bool(node_bin), node_bin or ""),
+            "npm": (bool(npm_bin), npm_bin or ""),
+            "php": (bool(php_bin), php_bin or ""),
+            "java": (bool(java_bin), java_bin or ""),
+            "gradle": (bool(gradle_bin), gradle_bin or ""),
+            "adb": (bool(adb_bin), adb_bin or ""),
+        }
+    else:
+        versions = check_tools_parallel({
+            "git": (git_bin, "--version"),
+            "python": (py_bin, "--version"),
+            "node": (node_bin, "--version"),
+            "npm": (npm_bin, "--version"),
+            "php": (php_bin, "--version"),
+            "java": (java_bin, "-version"),
+            "gradle": (gradle_bin, "--version"),
+            "adb": (adb_bin, "version"),
+        })
 
     # Git
     if git_bin:
@@ -389,11 +404,11 @@ def inspect_environment() -> List[CheckResult]:
         status = "ok" if (has_platforms and has_build_tools) else "warning"
         details_list = [f"Path: {sdk_path}"]
         if has_platforms:
-            details_list.append("Platforms: ✓")
+            details_list.append("Platforms: yes")
         else:
             details_list.append("Platforms: missing")
         if has_build_tools:
-            details_list.append("Build-tools: ✓")
+            details_list.append("Build-tools: yes")
         else:
             details_list.append("Build-tools: missing")
 
@@ -466,10 +481,10 @@ def inspect_environment() -> List[CheckResult]:
     return results
 
 
-def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
-    """Run doctor and render output or return JSON dictionary."""
+def run_doctor(json_mode: bool = False, quick: bool = False) -> Dict[str, Any]:
+    """Run doctor and render an ASCII report (or return the JSON dictionary)."""
     started = time.monotonic()
-    results = inspect_environment()
+    results = inspect_environment(quick=quick)
     elapsed = round(time.monotonic() - started, 2)
 
     counts = {"ok": 0, "warning": 0, "missing": 0, "error": 0}
@@ -481,7 +496,8 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
         "counts": counts,
         "checks": [r.to_dict() for r in results],
         "lan_ip": get_lan_ip(),
-        "elapsed_seconds": elapsed
+        "elapsed_seconds": elapsed,
+        "quick": quick,
     }
 
     if json_mode:
@@ -489,40 +505,38 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
         print(json.dumps(report_data, indent=2))
         return report_data
 
-    # Human-readable rendering
-    print("\n" + "=" * 58)
-    print("           WOBBLE ENVIRONMENT DOCTOR")
-    print("=" * 58)
+    logger = get_logger()
+    color = logger.use_color
+    print()
+    print(theme.banner(color, theme.TAGLINE))
+    print()
+    print(theme.rule("environment doctor", width=68, use_color=color))
 
     current_cat = ""
     for r in results:
         if r.category != current_cat:
             current_cat = r.category
-            print(f"\n[ {current_cat} ]")
-
-        if r.status == "ok":
-            icon = "\033[32m✓\033[0m"
-        elif r.status == "warning":
-            icon = "\033[33m⚠\033[0m"
-        elif r.status == "missing":
-            icon = "\033[31m✗\033[0m"
-        else:
-            icon = "\033[31m!\033[0m"
-
-        print(f"  {icon} {r.name:<26} {r.details}")
+            print()
+            print(theme.paint(f"  {current_cat.upper()}", theme.BOLD, theme.BRIGHT_WHITE,
+                              enabled=color))
+        print(f"  {theme.badge(r.status, color)} {r.name:<26} {r.details}")
         if r.problem:
-            print(f"      \033[2mProblem:\033[0m {r.problem}")
+            print(f"        {theme.paint('problem:', theme.DIM, enabled=color)} {r.problem}")
         if r.fix:
-            print(f"      \033[36mFix:\033[0m {r.fix}")
+            print(f"        {theme.paint('fix:', theme.CYAN, enabled=color)} {r.fix}")
 
-    print("\n" + "-" * 58)
-    print(f"Summary: \033[32m{counts['ok']} Passed\033[0m | "
-          f"\033[33m{counts['warning']} Warnings\033[0m | "
-          f"\033[31m{counts['missing']} Missing\033[0m | "
-          f"Scanned in {elapsed}s")
+    summary = [
+        f"{theme.badge('ok', color)}  passed   {counts['ok']}",
+        f"{theme.badge('warning', color)}  warnings {counts['warning']}",
+        f"{theme.badge('missing', color)}  missing  {counts['missing']}",
+        f"{theme.badge('error', color)}  errors   {counts['error']}",
+        f"{theme.paint('scan', theme.DIM, enabled=color)}     {elapsed}s"
+        + (" (quick mode)" if quick else ""),
+    ]
+    print()
+    print(theme.box("summary", summary, width=68, use_color=color))
 
     if counts["missing"] > 0 or counts["warning"] > 0:
-        print("\n\033[1mQuick Fix Recommendations:\033[0m")
         suggested_pkg = []
         if any(r.name == "Git" and r.status == "missing" for r in results):
             suggested_pkg.append("git")
@@ -533,7 +547,13 @@ def run_doctor(json_mode: bool = False) -> Dict[str, Any]:
         if any(r.name == "Android Build Tools" and r.status in ("missing", "warning") for r in results):
             suggested_pkg.append("aapt apksigner")
         if suggested_pkg:
-            print(f"  pkg install -y {' '.join(suggested_pkg)}")
+            print()
+            print(theme.paint("  Quick fix:", theme.BOLD, theme.YELLOW, enabled=color),
+                  f"pkg install -y {' '.join(suggested_pkg)}")
 
-    print("=" * 58 + "\n")
+    if counts["missing"] == 0 and counts["error"] == 0 and counts["warning"] == 0:
+        print()
+        print(theme.paint("  All checks passed. Happy building.", theme.GREEN, theme.BOLD,
+                          enabled=color))
+    print()
     return report_data

@@ -45,6 +45,8 @@ class TestCompletion(unittest.TestCase):
             code = main(["completion", "bash"])
         self.assertEqual(code, 0)
         script = f.getvalue()
+        self.assertTrue(script.startswith("# Wobble (wob) bash completion"))
+        self.assertNotIn("\\", script.splitlines()[0])
         self.assertIn("complete -F _wob_completions wob", script)
         for word in ("doctor", "apk", "preview", "completion"):
             self.assertIn(word, script)
@@ -66,6 +68,11 @@ class TestCompletion(unittest.TestCase):
         data = json.loads(f.getvalue())
         self.assertEqual(data["shell"], "bash")
         self.assertIn("complete", data["script"])
+
+    def test_schema_lists_version_and_help(self):
+        schema = get_cli_schema()
+        self.assertIn("version", schema["commands"])
+        self.assertIn("help", schema["commands"])
 
     def test_schema_lists_completion(self):
         schema = get_cli_schema()
