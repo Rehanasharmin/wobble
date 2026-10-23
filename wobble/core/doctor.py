@@ -23,7 +23,7 @@ import re
 import time
 from pathlib import Path
 
-from wobble.core import health, probecache, theme
+from wobble.core import health, packages, probecache, theme
 from wobble.core.context import (
     find_tool,
     get_android_sdk_candidates,
@@ -324,6 +324,14 @@ def _storage_mount_check() -> Optional[CheckResult]:
     return None
 
 
+def _storage_fix() -> str:
+    """Platform-appropriate "free up space" advice."""
+    if packages.package_family() == packages.TERMUX:
+        return "Run 'wob clean --all' and 'pkg clean', or remove old build outputs."
+    return ("Run 'wob clean --all', clear your package manager's cache, or remove "
+            "old build outputs.")
+
+
 def _package_manager_check() -> CheckResult:
     """Termux ships ``pkg``; other systems use apt/dnf/pacman."""
     pkg = find_tool("pkg")
@@ -338,8 +346,9 @@ def _package_manager_check() -> CheckResult:
     return CheckResult(
         name="Package Manager", category="Environment", status="warning",
         details="No supported package manager found",
-        problem="Wobble prints 'pkg install ...' fixes, which need Termux's pkg helper.",
-        fix="Install Termux from F-Droid or GitHub Releases; pkg ships with termux-tools.",
+        problem="No supported package manager was found, so install hints cannot be resolved.",
+        fix="Install Termux from F-Droid or GitHub Releases (pkg ships with its bootstrap); "
+            "otherwise install apt, dnf, pacman or apk and re-run 'wob doctor'.",
         code="package_manager",
     )
 
@@ -484,7 +493,8 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
             status="ok" if py_ok else "error",
             details=f"{python['implementation']} {python['version']} at {python['executable']}",
             problem=None if py_ok else "Wobble requires Python 3.8 or newer.",
-            fix=None if py_ok else "pkg install -y python",
+            fix=None if py_ok else packages.install_hint(
+                ("python",), "Upgrade Python with: "),
             code="python_runtime",
         ))
 
@@ -501,7 +511,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                         f"({storage['percent_used']}% used)",
                 problem="Low disk space: Gradle builds and the Android SDK need gigabytes."
                 if low_storage else None,
-                fix="pkg clean, wob clean, or remove old build outputs." if low_storage else None,
+                fix=_storage_fix() if low_storage else None,
                 code="available_storage",
             ))
         else:
@@ -631,14 +641,14 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 status="ok" if ok else "warning",
                 details=version or binaries["git"],
                 problem=None if ok else "Git was found but did not report a version.",
-                fix=None if ok else "pkg install -y git",
+                fix=None if ok else packages.install_hint(("git",), "Install Git with: "),
                 code="git", cached=cached_flag("git"),
             ))
         else:
             results.append(_empty_check(
                 "Git", "Dev Tools", "Not installed", "git"))
             results[-1].problem = "Git is needed for templates, plugins, and version control."
-            results[-1].fix = "Install Git with: pkg install -y git"
+            results[-1].fix = packages.install_hint(("git",), "Install Git with: ")
 
         if binaries["python"]:
             ok, version = version_of("python")
@@ -652,7 +662,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="Python", category="Dev Tools", status="missing",
                 details="Not installed",
                 problem="Python 3 runs Wobble itself and Python web projects.",
-                fix="Install Python with: pkg install -y python",
+                fix=packages.install_hint(("python",), "Install Python with: "),
                 code="python",
             ))
 
@@ -670,7 +680,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="Node.js", category="Web Tools", status="missing",
                 details="Not installed",
                 problem="Node.js is required for Vite, React, Vue, Svelte, and Next.js.",
-                fix="Install Node.js with: pkg install -y nodejs",
+                fix=packages.install_hint(("nodejs",), "Install Node.js with: "),
                 code="nodejs",
             ))
 
@@ -687,7 +697,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 status="warning" if binaries["node"] else "missing",
                 details="Not installed",
                 problem="npm installs web project dependencies.",
-                fix="Install npm (bundled with nodejs): pkg install -y nodejs",
+                fix=packages.install_hint(("nodejs",), "Install npm (bundled with nodejs): "),
                 code="npm",
             ))
 
@@ -703,7 +713,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="PHP", category="Web Tools", status="missing",
                 details="Not installed (optional)",
                 problem="PHP is only needed for PHP web applications and APIs.",
-                fix="Install PHP with: pkg install -y php",
+                fix=packages.install_hint(("php",), "Install PHP with: "),
                 code="php",
             ))
 
@@ -720,7 +730,8 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 status="ok" if javac_bin else "warning",
                 details=details,
                 problem=None if javac_bin else "Java runtime found, but javac is missing.",
-                fix=None if javac_bin else "Install the full JDK: pkg install -y openjdk-17",
+                fix=None if javac_bin else packages.install_hint(
+                    ("jdk",), "Install the full JDK: "),
                 code="java_jdk", cached=cached_flag("java"),
             ))
             java_home = os.environ.get("JAVA_HOME")
@@ -729,7 +740,8 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                     name="JAVA_HOME", category="Android Toolchain", status="warning",
                     details=f"{java_home} does not exist",
                     problem="JAVA_HOME points at a missing directory; Gradle will fail to start.",
-                    fix="Unset JAVA_HOME or point it at a real JDK (pkg install -y openjdk-17).",
+                    fix="Unset JAVA_HOME or point it at a real JDK ("
+                        + (packages.install_command(("jdk",)) or "install a JDK") + ").",
                     code="java_home",
                 ))
             elif not java_home:
@@ -744,7 +756,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="Java / JDK", category="Android Toolchain", status="missing",
                 details="Not installed",
                 problem="A JDK is required to build Android APKs with Gradle.",
-                fix="Install OpenJDK 17 with: pkg install -y openjdk-17",
+                fix=packages.install_hint(("jdk",), "Install OpenJDK 17 with: "),
                 code="java_jdk",
             ))
 
@@ -757,21 +769,36 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
             ))
             gradle_version = _gradle_version(version or "")
             jdk_major = _jdk_major(version_of("java")[1]) if binaries["java"] else None
-            if gradle_version and jdk_major and jdk_major >= 17 and gradle_version < (7, 3):
-                results.append(CheckResult(
-                    name="JDK / Gradle Compatibility", category="Android Toolchain",
-                    status="warning",
-                    details=f"JDK {jdk_major} with Gradle {gradle_version[0]}.{gradle_version[1]}",
-                    problem="Gradle older than 7.3 cannot run on JDK 17+.",
-                    fix="Upgrade Gradle (pkg install -y gradle) or use JDK 11 for that project.",
-                    code="jdk_gradle_compatibility",
-                ))
+            # Verified facts: Java 17 support arrived in Gradle 7.3, and Gradle 9
+            # requires Java 17 or newer to start.  Termux has never packaged
+            # openjdk-11, so the previous "use JDK 11" advice was unusable.
+            if gradle_version and jdk_major is not None:
+                problem = None
+                fix = None
+                if gradle_version < (7, 3) and jdk_major >= 17:
+                    problem = (f"Gradle {gradle_version[0]}.{gradle_version[1]} predates "
+                               "JDK 17 support and cannot run on this JDK.")
+                    fix = packages.install_hint(("gradle",), "Upgrade Gradle with: ")
+                elif gradle_version >= (9, 0) and jdk_major < 17:
+                    problem = (f"Gradle {gradle_version[0]}.{gradle_version[1]} requires "
+                               "JDK 17 or newer to start.")
+                    fix = packages.install_hint(("jdk",), "Install JDK 17 with: ")
+                if problem:
+                    results.append(CheckResult(
+                        name="JDK / Gradle Compatibility", category="Android Toolchain",
+                        status="warning",
+                        details=f"JDK {jdk_major} with Gradle "
+                                f"{gradle_version[0]}.{gradle_version[1]}",
+                        problem=problem,
+                        fix=fix,
+                        code="jdk_gradle_compatibility",
+                    ))
         else:
             results.append(CheckResult(
                 name="Gradle", category="Android Toolchain", status="missing",
                 details="Not installed globally (gradlew can be used inside projects)",
                 problem="No global gradle. Projects with a Gradle wrapper can still build.",
-                fix="Install Gradle with: pkg install -y gradle",
+                fix=packages.install_hint(("gradle",), "Install Gradle with: "),
                 code="gradle",
             ))
 
@@ -795,16 +822,17 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="Android SDK", category="Android Toolchain", status=status,
                 details=" | ".join(details_bits),
                 problem="Android SDK is missing platforms or build-tools." if status != "ok" else None,
-                fix="Install SDK packages via sdkmanager or 'wob deps install android-sdk'."
-                if status != "ok" else None,
+                fix=("Run 'wob deps install android-sdk' to add the missing SDK packages."
+                     if status != "ok" else None),
                 code="android_sdk",
             ))
         else:
             results.append(CheckResult(
                 name="Android SDK", category="Android Toolchain", status="missing",
                 details="Not found in standard paths or $ANDROID_HOME",
-                problem="The Android SDK is required to compile native Android apps on Termux.",
-                fix="Set ANDROID_HOME in ~/.bashrc or run 'wob deps install android-sdk'.",
+                problem="The Android SDK is required to compile native Android apps.",
+                fix=("Termux has no Android SDK package. " + packages.android_sdk_hint()
+                     + " Then set ANDROID_HOME in ~/.bashrc."),
                 code="android_sdk",
             ))
 
@@ -815,21 +843,29 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
             build_tools_found.append("apksigner")
         if zipalign_bin:
             build_tools_found.append("zipalign")
-        if len(build_tools_found) >= 3:
+        missing_tools = [name for name, found in
+                         (("aapt2", aapt2_bin), ("apksigner", apksigner_bin),
+                          ("zipalign", zipalign_bin)) if not found]
+        if not missing_tools:
             results.append(CheckResult(
                 name="Android Build Tools", category="Android Toolchain", status="ok",
                 details=", ".join(build_tools_found) + " on PATH",
                 code="android_build_tools",
             ))
         else:
+            # Termux: "aapt" installs aapt and zipalign, aapt2 is a split package
+            # of the same build, and apksigner is separate (it pulls openjdk-21).
+            # The old "aapt apksigner" hint therefore never satisfied aapt2.
             results.append(CheckResult(
                 name="Android Build Tools", category="Android Toolchain",
                 status="warning" if build_tools_found else "missing",
-                details=", ".join(build_tools_found) if build_tools_found
-                else "aapt2, apksigner, zipalign not found",
+                details=(", ".join(build_tools_found) + " on PATH; missing "
+                         + ", ".join(missing_tools)) if build_tools_found
+                else ", ".join(missing_tools) + " not found",
                 problem="These utilities inspect and package APKs directly; Wobble falls back "
                         "to its pure-Python parser without them.",
-                fix="Install Android build tools: pkg install -y aapt apksigner",
+                fix=packages.install_hint(("aapt", "aapt2", "apksigner"),
+                                          "Install Android build tools: "),
                 code="android_build_tools",
             ))
 
@@ -845,7 +881,7 @@ def inspect_environment(quick: bool = False, only: Optional[str] = None,
                 name="ADB (Android Debug Bridge)", category="Android Toolchain", status="missing",
                 details="Not installed (optional on-device)",
                 problem="ADB is optional on the device itself; Wobble uses Android's installer.",
-                fix="For ADB over Wi-Fi / localhost: pkg install -y android-tools",
+                fix=packages.install_hint(("adb",), "For ADB over Wi-Fi / localhost: "),
                 code="adb",
             ))
 
@@ -877,6 +913,63 @@ inspect_environment.last_timings = {}  # type: ignore[attr-defined]
 
 # ---------------------------------------------------------------------------
 # Report
+
+# ---------------------------------------------------------------------------
+# Install advice
+# ---------------------------------------------------------------------------
+#: Doctor checks that map onto installable package keys. Optional tools (PHP,
+#: ADB) are deliberately absent: they are never required to build anything and
+#: including them turned the "Quick fix" line into noise.
+QUICK_FIX_CHECKS = (
+    ("Git", ("git",)),
+    ("Node.js", ("nodejs",)),
+    ("npm", ("nodejs",)),
+    ("Java / JDK", ("jdk",)),
+    ("JAVA_HOME", ("jdk",)),
+    ("JDK / Gradle Compatibility", ("jdk", "gradle")),
+    ("Gradle", ("gradle",)),
+    ("Android Build Tools", ("aapt", "aapt2", "apksigner")),
+)
+
+
+def build_quick_fix(results: List["CheckResult"]) -> Dict[str, Any]:
+    """Turn failing checks into one verified, platform-appropriate command.
+
+    The command is resolved through :mod:`wobble.core.packages`, so a Debian
+    host receives ``sudo apt install -y openjdk-17-jdk`` rather than Termux's
+    ``pkg install -y openjdk-17``, and unavailable Android build-tools are
+    reported instead of being silently omitted.
+    """
+    failing = {result.name for result in results if result.status in ("missing", "warning")}
+    keys: List[str] = []
+    for check_name, check_keys in QUICK_FIX_CHECKS:
+        if check_name not in failing:
+            continue
+        for key in check_keys:
+            if key not in keys:
+                keys.append(key)
+
+    family = packages.package_family()
+    command = packages.install_command(keys, family)
+    unsupported = packages.unsupported_keys(keys, family)
+    notes: List[str] = []
+    if command and family == packages.TERMUX:
+        notes.append("Run 'pkg update' first if a package is reported as unavailable.")
+        if "jdk" in keys:
+            notes.append("Termux also ships openjdk-21 and openjdk-25; the Android "
+                         "Gradle Plugin needs JDK 17 or newer.")
+    if unsupported:
+        notes.append("Google's Android build-tools are not packaged for "
+                     f"{packages.family_label(family)}: install them with sdkmanager.")
+    return {
+        "command": command,
+        "note": " ".join(notes) if notes else None,
+        "packages": packages.packages_for(keys, family),
+        "unavailable": unsupported,
+        "package_manager": family or None,
+    }
+
+
 # ---------------------------------------------------------------------------
 def _counts(results: List[CheckResult]) -> Dict[str, int]:
     counts = {"ok": 0, "warning": 0, "missing": 0, "error": 0}
@@ -962,6 +1055,7 @@ def run_doctor(json_mode: bool = False, quick: bool = False, only: Optional[str]
         "previous_run": diff.get("previous_at"),
         "baseline": baseline_state,
         "fail_on": fail_on,
+        "quick_fix": build_quick_fix(results),
     }
     report_data["exit_code"] = doctor_exit_code(report_data, fail_on)
 
@@ -1045,23 +1139,16 @@ def run_doctor(json_mode: bool = False, quick: bool = False, only: Optional[str]
                            f"{probe_cache.get('entries', 0)} total")
         print(theme.box("timings", timing_rows, width=70, use_color=color))
 
-    if counts["missing"] or counts["warning"] or counts["error"]:
-        suggested = []
-        names = {r.name for r in results if r.status in ("missing", "warning")}
-        if "Git" in names:
-            suggested.append("git")
-        if "Node.js" in names:
-            suggested.append("nodejs")
-        if "Java / JDK" in names:
-            suggested.append("openjdk-17")
-        if "Android Build Tools" in names:
-            suggested.append("aapt apksigner")
-        if "PHP" in names and "php" not in suggested:
-            suggested.append("php")
-        if suggested:
-            print()
-            print(theme.paint("  Quick fix:", theme.BOLD, theme.YELLOW, enabled=color),
-                  f"pkg install -y {' '.join(suggested)}")
+    quick_fix = report_data.get("quick_fix") or {}
+    if quick_fix.get("command"):
+        print()
+        print(theme.paint("  Quick fix:", theme.BOLD, theme.YELLOW, enabled=color),
+              quick_fix["command"])
+        if quick_fix.get("note"):
+            print(theme.paint(f"             {quick_fix['note']}", theme.DIM, enabled=color))
+        elif quick_fix.get("unavailable"):
+            print(theme.paint("             Some tools above are not packaged here; "
+                              "see their individual fixes.", theme.DIM, enabled=color))
 
     if counts["missing"] == 0 and counts["error"] == 0 and counts["warning"] == 0:
         print()

@@ -49,7 +49,7 @@ Starting with version 1.2.0, Wobble installs like ordinary software rather than 
 
 ## Overview
 
-Wobble addresses the practical difficulties of compiling software on a phone. Standard Android development tooling assumes a desktop workstation: Gradle's default daemon keeps a multi-hundred-megabyte JVM resident in memory,[5] compiled APKs are buried several directories deep inside `app/build/outputs/`, development servers default to `127.0.0.1` (unreachable from other devices) without an obvious safe way to opt into LAN testing, and Android's security policy forbids silently installing APKs without user confirmation.[6]
+Wobble addresses the practical difficulties of compiling software on a phone. Standard Android development tooling assumes a desktop workstation: Gradle's daemon keeps a JVM resident between builds,[5] compiled APKs are buried several directories deep inside `app/build/outputs/`, development servers default to `127.0.0.1` (unreachable from other devices) without an obvious safe way to opt into LAN testing, and Android's security policy forbids silently installing APKs without user confirmation.[6]
 
 Wobble wraps these workflows in one discoverable CLI. A typical session looks like:
 
@@ -74,9 +74,9 @@ Developing software on Android devices involves several platform-level constrain
 
 - **Packaging and distribution policy.** Google Play's target-API requirements broke Termux updates on the Play Store channel starting in 2020; the Termux maintainers designate F-Droid and GitHub releases as the only official installation sources and keep Play Store builds deprecated.[1][2] Wobble's own installer is therefore channel-agnostic: a one-line script or a plain `git clone`.
 
-- **Memory pressure.** The Gradle daemon is enabled by default and retains a JVM heap between builds (512 MB–1 GB by default).[5] On devices with 3–6 GB of total RAM — much of it consumed by Android itself — a lingering daemon routinely triggers the low-memory killer mid-build. Wobble-generated projects set `org.gradle.daemon=false`, cap the JVM heap at 1024 MB (`-Xmx1024m`), and disable parallel workers.
+- **Memory pressure.** The Gradle daemon is enabled by default since Gradle 3.0 and, unless a maximum heap is configured, uses up to 512 MB of heap.[5] On devices with 3–6 GB of total RAM — much of it consumed by Android itself — a lingering daemon routinely triggers the low-memory killer mid-build. Wobble-generated projects set `org.gradle.daemon=false`, cap the JVM heap at 1024 MB (`-Xmx1024m`), and disable parallel workers.
 
-- **No privileged install path.** Android requires that package installation be confirmed by the user through the system package installer; the supported programmatic route is an `ACTION_VIEW` intent carrying the MIME type `application/vnd.android.package-archive`.[6] Wobble dispatches exactly this intent (via `termux-open`, `termux-am`, or `adb`) and reports honestly whether the intent was sent — it never claims a silent install succeeded.
+- **No privileged install path.** Android requires that package installation be confirmed by the user through the system package installer. Ordinary apps can either drive a `PackageInstaller` session[6] or open the system installer with an `ACTION_VIEW` intent carrying the MIME type `application/vnd.android.package-archive`; neither path may skip the confirmation prompt. Wobble dispatches that intent (via `termux-open`, `termux-am`/`am`, or `adb`) and reports honestly whether it was sent — it never claims a silent install succeeded.
 
 ---
 
@@ -98,7 +98,7 @@ Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer 
 
 | Area | Capability |
 |:---|:---|
-| **Environment doctor** | `wob doctor` audits CPU architecture, Android version, RAM, disk space, PATH integrity, mount flags, Java/Gradle/SDK, Node.js, Python, PHP, Git, ADB, and the Wobble installation itself; every failed check ships with a copy-paste `pkg install` fix. Probes run concurrently and are cached until the underlying binary changes, and each run is diffed against the previous one so regressions and persistent failures stand out. `--only`, `--timings`, `--strict`, and `--fail-on` make it scriptable. |
+| **Environment doctor** | `wob doctor` audits CPU architecture, Android version, RAM, disk space, PATH integrity, mount flags, Java/Gradle/SDK, Node.js, Python, PHP, Git, ADB, and the Wobble installation itself; every failed check ships with a copy-paste install fix resolved for the active package manager (`pkg` on Termux, `apt`/`dnf`/`pacman` elsewhere). Probes run concurrently and are cached until the underlying binary changes, and each run is diffed against the previous one so regressions and persistent failures stand out. `--only`, `--timings`, `--strict`, and `--fail-on` make it scriptable. |
 | **Android projects** | `wob create android` scaffolds a complete Gradle project (`build.gradle`, `settings.gradle`, `gradle.properties`, manifest, activity, resources) with memory-safe defaults: daemon disabled, `-Xmx1024m` heap, single-worker builds. |
 | **APK tooling** | Locate build outputs automatically; inspect package name, version, min/target SDK, permissions, native ABIs, DEX entries, and SHA-256 using `aapt`/`aapt2` when present or a pure-Python binary-XML fallback when not. Sign with `apksigner`; export to the Android Download folder. |
 | **On-device installation** | `wob apk install` opens the system package installer through `termux-open`, `termux-am`, or `adb`, with `--method` to force a specific transport. |
@@ -344,7 +344,7 @@ The server is threaded, uses HTTP/1.1 keep-alive, gzip-compresses text assets wi
 | `wob web build / test` | Production build / test suite |
 | `wob web preview [-p port] [--dir d] [--lan]` | Hardened static preview with SPA fallback |
 | `wob web serve [-p port] [--lan]` | Static HTTP file server |
-| `wob deps install [stack] / add / remove / doctor / list` | Unified dependency management (`pkg`, `npm`, `pip`, `composer`) |
+| `wob deps install [stack] / add / remove / doctor / list` | Unified dependency management (`pkg`, `npm`, `pip`, `composer`); `android-toolchain` installs verified system packages and `android-sdk` drives `sdkmanager` |
 | `wob plugin list / info <name>` | Inspect framework plugins and prerequisites |
 | `wob config list / get / set` | Persistent user configuration |
 | `wob self status [--deep] [--brief] [--strict]` | Fast health report; `--deep` hashes files and smoke-tests imports |
@@ -457,7 +457,7 @@ Human errors include a concise cause and, when known, a `Hint:` with the next re
 - **Keystore passwords are not argv.** `wob apk sign` passes credentials to `apksigner` through `WOBBLE_KS_PASS` (`env:` protocol), so they do not appear in `ps` output.
 - **Installation integrity.** The installer writes a SHA-256 manifest and `wob self verify` re-hashes the installed tree. `wob self status` reports whether the runtime is source-independent, and the launcher refuses to run from a damaged app directory with a clear reinstall message.
 - **Safer uninstall.** Uninstall removes only files that carry Wobble's generated-launcher marker or completion signature; foreign executables are reported and kept. Project directories are never touched; config is kept unless `--purge` is given.
-- **Full test coverage.** 234 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON success/error contracts, installer isolation, preview security, plugin trust rules, persistence recovery, partial failures, input validation, and the safety properties above.
+- **Full test coverage.** 307 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON success/error contracts, installer isolation, preview security, plugin trust rules, persistence recovery, partial failures, input validation, and the safety properties above.
 
 ---
 
@@ -503,12 +503,12 @@ Conventions for agents (`AI_GUIDE.md`):
 ```bash
 git clone https://github.com/Rehanasharmin/wobble.git
 cd wobble
-python3 tests/run_tests.py     # 234 tests, standard library only
+python3 tests/run_tests.py     # 307 tests, standard library only
 python3 benchmarks/bench.py     # CLI latency benchmark (see benchmarks/README.md)
 sh install.sh                  # install the standalone application
 ```
 
-The test suite is dependency-free (standard-library `unittest` only) and covers the installer (including deleting the source checkout and re-running the launcher), preview security, plugin trust rules, and input validation. Project layout, plugin authoring, and platform-specific notes are documented in [`docs/`](docs/) — see [`docs/architecture.md`](docs/architecture.md), [`docs/plugins.md`](docs/plugins.md), [`docs/android_guide.md`](docs/android_guide.md), and [`docs/web_guide.md`](docs/web_guide.md). Contributions follow [`CONTRIBUTING.md`](CONTRIBUTING.md).
+The test suite is dependency-free (standard-library `unittest` only) and covers the installer (including deleting the source checkout and re-running the launcher), preview security, plugin trust rules, and input validation. Project layout, plugin authoring, and platform-specific notes are documented in [`docs/`](docs/) — see [`docs/architecture.md`](docs/architecture.md), [`docs/plugins.md`](docs/plugins.md), [`docs/android_guide.md`](docs/android_guide.md), [`docs/web_guide.md`](docs/web_guide.md), and [`docs/termux_packages.md`](docs/termux_packages.md) for the verified package names used in install advice. Contributions follow [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
@@ -516,11 +516,11 @@ The test suite is dependency-free (standard-library `unittest` only) and covers 
 
 1. Termux project. "Termux — a terminal emulator application for Android OS." *termux.dev* / [termux/termux-app](https://github.com/termux/termux-app). Retrieved 17 October 2026.
 2. Termux maintainers. "Response Regarding Google PlayStore App Updates." *termux/termux-app Discussion #4000*, 8 June 2024 — Play Store releases remain deprecated; F-Droid and GitHub are the only official release sources. [github.com/termux/termux-app/discussions/4000](https://github.com/termux/termux-app/discussions/4000)
-3. Android Open Source Project. "Behavior changes: all apps — Execute permission (Android 10)." *developer.android.com* — untrusted apps targeting API 29 cannot `exec()` files in the app home directory (W^X). [developer.android.com/about/versions/10/behavior-changes-all#execute-permission](https://developer.android.com/about/versions/10/behavior-changes-all#execute-permission)
-4. Termux developers. "Termux execution environment." *termux/termux-packages Wiki* — external/shared storage is mounted `noexec`; files cannot be executed directly from `/sdcard`. [github.com/termux/termux-packages/wiki/Termux-execution-environment](https://github.com/termux/termux-packages/wiki/Termux-execution-environment)
-5. Gradle. "The Gradle Daemon." *Gradle User Manual* — daemon enabled by default; `--no-daemon` disables it; default daemon heap 512 MB–1 GB. [docs.gradle.org/current/userguide/gradle_daemon.html](https://docs.gradle.org/current/userguide/gradle_daemon.html)
-6. Android Open Source Project. "Common intents — Install an app." *developer.android.com* — package installation is performed through an `ACTION_VIEW` intent with MIME type `application/vnd.android.package-archive`. [developer.android.com/guide/components/intents-filters](https://developer.android.com/guide/components/intents-filters)
-7. Vite. "Server options." *Vite documentation* — `server.host` controls dev-server bind address (`0.0.0.0` exposes on the LAN). [vitejs.dev/config/server-options.html](https://vitejs.dev/config/server-options.html)
+3. Android Open Source Project. "Behavior changes: apps targeting API 29+ — Removed execute permission for app home directory." *developer.android.com* — apps targeting API 29 cannot `exec()` files in their writable home directory (W^X). [developer.android.com/about/versions/10/behavior-changes-10#execute-permission](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)
+4. Termux project. "Internal and external storage." *Termux Wiki* — shared and external storage do not support executables, `chmod` or special files, so software must stay in `$HOME`/`$PREFIX`. [wiki.termux.com/wiki/Internal_and_external_storage](https://wiki.termux.com/wiki/Internal_and_external_storage). Execution and linking details are documented in ["Termux execution environment"](https://github.com/termux/termux-packages/wiki/Termux-execution-environment).
+5. Gradle. "The Gradle Daemon." *Gradle User Manual* — the daemon is enabled by default since Gradle 3.0 and uses up to 512 MB of heap when no maximum is configured; `--no-daemon` disables it. [docs.gradle.org/current/userguide/gradle_daemon.html](https://docs.gradle.org/current/userguide/gradle_daemon.html)
+6. Android Open Source Project. "PackageInstaller." *developer.android.com* — package installation runs through a user-confirmed install session; an `ACTION_VIEW` intent with MIME type `application/vnd.android.package-archive` opens the system installer. [developer.android.com/reference/android/content/pm/PackageInstaller](https://developer.android.com/reference/android/content/pm/PackageInstaller)
+7. Vite. "Server options." *Vite documentation* — `server.host` defaults to `localhost` and controls the dev-server bind address (`0.0.0.0` exposes it on the LAN). [vite.dev/config/server-options.html](https://vite.dev/config/server-options.html)
 8. The Apache Software Foundation. "Apache License, Version 2.0." 2004. [apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0)
 9. F-Droid. "Termux." *F-Droid package repository*. [f-droid.org/packages/com.termux/](https://f-droid.org/packages/com.termux/)
 

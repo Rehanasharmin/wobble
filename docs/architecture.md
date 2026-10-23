@@ -247,4 +247,6 @@ piped output, JSON mode, and test captures stay plain ASCII.
 | `test_plugins.py` | built-in discovery plus user-plugin trust rules |
 | `test_cli.py`, `test_json_output.py`, `test_schema.py`, `test_ux.py` | parser, JSON, schema, completion, clean |
 | `test_android.py`, `test_apk.py`, `test_web.py`, `test_deps.py`, `test_doctor.py`, `test_context.py`, `test_executor.py`, `test_fsutil.py`, `test_project.py`, `test_framework_detection.py` | domain behaviour and safety |
+| `test_packages.py` | verified Termux/distro package names and the resolved doctor `quick_fix` |
+| `test_recovery.py` | offline snapshots, runtime restore, rescue mode |
 | `test_selfcheck.py`, `test_health.py`, `test_startup.py` | self-health checks, repair, incident ledger, probe cache, regression diffs, startup import hygiene |

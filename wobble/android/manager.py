@@ -21,6 +21,20 @@ def build_android(project_path: Path, release: bool = False, clean: bool = False
     if not android_plugin:
         return {"success": False, "error": "Android plugin not available"}
 
+    # Fail with a diagnosis instead of a Gradle stack trace when the installed
+    # Gradle cannot run the AGP the project pins (Termux now ships Gradle 9.x,
+    # while the scaffold's AGP 8.x line targets Gradle 8.13).
+    compat_check = getattr(android_plugin, "gradle_compatibility_problem", None)
+    compat = compat_check(project_path) if compat_check else None
+    if compat:
+        return {
+            "success": False,
+            "error": f"Gradle cannot build this project: {compat['reason']}.",
+            "error_code": "gradle_agp_incompatible",
+            "hint": compat["hint"],
+            "details": {"agp": compat["agp"], "gradle": compat["gradle"]},
+        }
+
     if clean:
         logger.step("Cleaning prior build artifacts...")
         clean_cmd = android_plugin.get_clean_command(project_path)
@@ -59,13 +73,20 @@ def build_android(project_path: Path, release: bool = False, clean: bool = False
         latest_apk_info = inspect_apk(apks[0])
         logger.success(f"Built APK successfully: {apks[0].name} ({latest_apk_info.get('size_human', '')})")
 
-    return {
+    data = {
         "success": True,
         "exit_code": 0,
         "mode": mode.lower(),
         "apks": [str(a) for a in apks],
         "latest_apk": latest_apk_info
     }
+    if not apks:
+        # Gradle can exit 0 while a custom output path leaves nothing in the
+        # standard directories; say so instead of implying an APK exists.
+        data["warning"] = ("Gradle reported success but no APK was found in the "
+                          "standard output directories.")
+        logger.warn("Gradle finished, but no APK was found under app/build/outputs.")
+    return data
 
 
 def clean_android(project_path: Path) -> Dict[str, Any]:

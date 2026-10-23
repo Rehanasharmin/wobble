@@ -57,7 +57,7 @@ Every Wobble project has a root `wobble.json` file. AI agents should read or val
   "type": "android",
   "framework": "android",
   "description": "Android application built with Wobble on Termux",
-  "wobble_version": "1.2.0",
+  "wobble_version": "1.3.0",
   "created_at": "2026-10-03T05:40:00Z",
   "package_id": "com.example.myapp",
   "scripts": {
@@ -67,7 +67,7 @@ Every Wobble project has a root `wobble.json` file. AI agents should read or val
     "install": "wob apk install"
   },
   "dependencies": {
-    "system": ["openjdk-17"],
+    "system": ["openjdk-17", "aapt", "aapt2", "apksigner"],
     "project": {
       "compileSdk": 34,
       "minSdk": 24
@@ -109,7 +109,7 @@ If `wobble.json` is missing in an existing workspace, Wobble infers the project 
 | List APKs | `wob apk list` | `wob apk list --json` | Finds all APK files in build outputs |
 | Inspect APK | `wob apk info <file>` | `wob apk info <file> --json` | Returns package, SDKs, DEX, SHA256, permissions |
 | Install APK | `wob apk install <file>` | `wob apk install <file> --json` | Dispatches Android package installer intent |
-| Install Dependencies | `wob deps install` | `wob deps install <stack>` | Stacks: `android`, `node`, `python`, `php` |
+| Install Dependencies | `wob deps install` | `wob deps install <stack>` | Stacks: `android`, `android-sdk`, `node`, `python`, `php` |
 | Add Dependency | `wob deps add <pkg>` | `wob deps add <pkg> -m <mgr>` | Managers: `termux`, `npm`, `pip`, `composer` |
 | Start Web Dev Server | `wob web dev` | `wob web dev --port 3000` | Localhost only by default; add `--lan` to expose on Wi-Fi |
 | Web Preview (Local) | `wob web preview` | `wob web preview --port 3000` | Hardened static server on `127.0.0.1` |
@@ -124,8 +124,19 @@ When an AI agent starts a session:
 1. Run `wob doctor --json`.
 2. Inspect the `checks` array.
 3. If any check has `status == "missing"`:
-   - Read the `fix` field.
-   - For missing Termux tools, propose installing the recommended packages (e.g. `pkg install -y openjdk-17 nodejs git`).
+   - Read the `fix` field for that check.
+   - Prefer the top-level `quick_fix.command`, which is already resolved for the
+     host's package manager (`pkg install -y ...` on Termux,
+     `sudo apt install -y openjdk-17-jdk ...` on Debian). Never hard-code
+     `pkg install` when `quick_fix.package_manager` is not `termux`.
+   - Follow `quick_fix.note` when present: on Termux a stale index needs
+     `pkg update` first, and `quick_fix.unavailable` lists tools that no
+     distribution packages (Android build-tools, which come from `sdkmanager`).
+   - For Android SDK checks, use `wob deps install android-sdk`, which drives
+     Google's `sdkmanager`; Termux and Linux distributions do not ship the SDK.
+   - Termux packages OpenJDK 17, 21 and 25 (`openjdk-17`, `openjdk-21`,
+     `openjdk-25`). There is no `openjdk-11`, and `aapt2` is a separate package
+     from `aapt` even though both come from the same build-tools tree.
 
 ### B. Creating and Building an Android Application
 1. Scaffold project:
@@ -268,7 +279,9 @@ class CustomPlugin(BasePlugin):
 ## 8. Safety Rules
 
 - Do NOT attempt to install or invoke unverified binary blobs downloaded from random URLs.
-- Always use `pkg` or official Termux package repositories.
+- Always use `pkg` (or the host distribution's package manager) and official
+  repositories; see `docs/termux_packages.md` for the verified name of every
+  package Wobble recommends.
 - Keep secrets, tokens, and keystore passwords out of command line arguments and Git commits. `wob apk sign` reads `WOBBLE_KS_PASS` through apksigner's `env:` protocol, so never pass a password as a flag or echo it into logs.
 - Do not bind previews or dev servers to `0.0.0.0`/`--lan` on public networks, and never disable the preview server's dotfile/secret blocking.
 - Treat `wob self status --deep` (or `wob self verify`) as the source of truth for installation health; let `wob self repair` restore files rather than patching `~/.local/share/wobble/app` by hand. If a patch is intentional, use `wob self repair --accept-current --yes` so the manifest *and* the snapshot record it.

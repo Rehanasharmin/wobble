@@ -190,7 +190,7 @@ elif [ -x {fallback} ]; then
     PY={fallback}
 else
     echo "wob: Python 3 is required but was not found in PATH." >&2
-    echo "wob: install it with: pkg install -y python" >&2
+    echo "wob: install Python 3.8+ first (Termux: pkg install -y python)" >&2
     exit 127
 fi
 "$PY" "$APP/wob.py" "$@"
