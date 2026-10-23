@@ -18,7 +18,8 @@ Installed launcher  ~/.local/bin/wob          Development launcher  bin/wob
     │     ├── ASCII Theme (`theme.py`)
     │     ├── Shell Completions (`completions.py`)
     │     ├── Dynamic Context Detector (`context.py`)
-    │     ├── Environment Doctor (`doctor.py`)
+    │     ├── Environment Doctor (`doctor.py`) ──► Probe Cache (`probecache.py`)
+    │     ├── Self-Check Engine (`selfcheck.py`) ──► Health Ledger (`health.py`)
     │     ├── Machine Schema (`schema.py`)
     │     ├── Safe Executor (`executor.py`)
     │     ├── Atomic File Utilities (`fsutil.py`)
@@ -92,6 +93,25 @@ Properties:
 - **Safe removal.** Uninstall deletes only files carrying Wobble's generated
   launcher/completion markers, plus the known runtime directories. Projects and
   `~/.wobble` are preserved unless `--purge` is passed.
+- **Self-diagnosis.** `wob self status` runs `selfcheck.inspect()`, which reads
+  only filesystem metadata (manifest, sizes, launcher target, bytecode coverage,
+  PATH resolution, config JSON, free space) in a couple of milliseconds.
+  `--deep` adds parallel SHA-256 verification and imports the heavy subcommand
+  modules to prove the runtime still loads. Each finding has a stable `code` and
+  a machine-readable `status` (`ok` / `info` / `warning` / `critical`).
+- **Honest repair.** `selfcheck.repair()` rewrites launchers, recompiles missing
+  bytecode, regenerates completions, removes install debris, and backs up corrupt
+  config/registry files. It never rewrites manifest hashes unless
+  `--accept-current` is passed explicitly, so damage cannot be hidden.
+- **Health memory.** `health.py` keeps a capped incident ledger
+  (`~/.wobble/health/incidents.json`) and a doctor snapshot
+  (`~/.wobble/health/doctor-baseline.json`). The bootstrap records unexpected
+  exceptions; the doctor diffs each run against the snapshot to report
+  regressions, recoveries, and long-standing failures.
+- **Probe cache.** `probecache.py` stores tool version probes keyed by the
+  executable's inode fingerprint (`st_dev`, `st_ino`, `mtime_ns`, `st_size`) with
+  a one-hour TTL, so upgrading a tool invalidates itself and repeat doctor runs
+  avoid subprocesses entirely.
 
 ## 3. Startup fast path
 
@@ -107,9 +127,13 @@ Consequences:
 - `argparse`, `difflib`, and subcommand modules are not imported for version or
   landing output.
 - `difflib` is imported only on the typo-suggestion error path.
-- `typing` was removed from startup-critical modules; plugin modules are
-  imported by module name in a fixed order, which also makes detection
-  deterministic.
+- `typing`, `json`, `hashlib`, `socket`, `tempfile`, `platform`, and
+  `concurrent.futures` are imported lazily; a cold `wob self status` no longer
+  pays for hashing, threading, or network machinery it does not use. A startup
+  regression test (`tests/test_startup.py`) fails if a heavy module creeps back
+  into the import path.
+- Plugin modules are imported by module name in a fixed order, which also makes
+  detection deterministic.
 - Memoized probes (`lru_cache`) cover Termux detection, architecture, Android
   SDK candidates, Java homes, Android properties, and the LAN IP.
 - Config lookup is side-effect free: `get_wobble_config_path()` no longer
@@ -205,3 +229,4 @@ piped output, JSON mode, and test captures stay plain ASCII.
 | `test_plugins.py` | built-in discovery plus user-plugin trust rules |
 | `test_cli.py`, `test_json_output.py`, `test_schema.py`, `test_ux.py` | parser, JSON, schema, completion, clean |
 | `test_android.py`, `test_apk.py`, `test_web.py`, `test_deps.py`, `test_doctor.py`, `test_context.py`, `test_executor.py`, `test_fsutil.py`, `test_project.py`, `test_framework_detection.py` | domain behaviour and safety |
+| `test_selfcheck.py`, `test_health.py`, `test_startup.py` | self-health checks, repair, incident ledger, probe cache, regression diffs, startup import hygiene |

@@ -18,21 +18,22 @@ Layout (defaults, override with ``WOBBLE_INSTALL_DIR``)::
     ~/.local/bin/wob         <- generated POSIX-sh launcher
 """
 
-import hashlib
-import json
+from __future__ import annotations
+
 import os
 import shlex
 import shutil
-import stat
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from wobble import __version__
-from wobble.core.completions import COMPLETIONS
 from wobble.core.context import get_home, get_prefix, is_termux
 from wobble.core.fsutil import atomic_write_json, atomic_write_text
+
+# NOTE: hashlib, concurrent.futures, and the (large) completion scripts are
+# imported lazily. `wob self status` must not pay for the hashing or shell
+# completion machinery just to inspect a manifest and a launcher.
 
 INSTALL_SCHEMA = 1
 APP_DIRNAME = "app"
@@ -97,6 +98,8 @@ def package_root() -> Path:
 
 
 def _sha256_file(path: Path) -> str:
+    import hashlib
+
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         for chunk in iter(lambda: handle.read(256 * 1024), b""):
@@ -200,6 +203,8 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 def _read_manifest(install_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    import json
+
     root = install_root or default_install_root()
     manifest = root / MANIFEST_NAME
     if not manifest.is_file():
@@ -209,6 +214,16 @@ def _read_manifest(install_root: Optional[Path] = None) -> Optional[Dict[str, An
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def read_manifest(install_root: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Public, never-raising manifest reader used by the self-check engine."""
+    return _read_manifest(install_root)
+
+
+def manifest_path(install_root: Optional[Path] = None) -> Path:
+    """Path of the install manifest for *install_root*."""
+    return (install_root or default_install_root()) / MANIFEST_NAME
 
 
 def _update_shell_path(bin_dir: Path) -> List[str]:
@@ -246,6 +261,8 @@ def _update_shell_path(bin_dir: Path) -> List[str]:
 
 
 def _install_completions(install_root: Path) -> List[str]:
+    from wobble.core.completions import COMPLETIONS
+
     home = get_home()
     targets = {
         "bash": home / ".local" / "share" / "bash-completion" / "completions" / "wob",
@@ -348,9 +365,167 @@ def _compile_runtime(app_dir: Path) -> None:
         pass
 
 
+def compile_runtime(app_dir: Path) -> Dict[str, Any]:
+    """Precompile *app_dir* bytecode. Returns ``{"ok", "pyc_files", "elapsed_ms"}``.
+
+    Bytecode is purely an optimisation: a failure is reported, never raised.
+    """
+    started = time.monotonic()
+    _compile_runtime(app_dir)
+    pyc = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(app_dir / "wobble"):
+            if "__pycache__" in dirnames:
+                pyc += sum(1 for name in os.listdir(os.path.join(dirpath, "__pycache__"))
+                           if name.endswith(".pyc"))
+    except OSError:
+        pyc = 0
+    return {
+        "ok": pyc > 0,
+        "pyc_files": pyc,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+    }
+
+
+def install_completions(install_root: Path) -> List[str]:
+    """Public wrapper that regenerates shell completion files."""
+    return _install_completions(install_root)
+
+
+def update_shell_path(bin_dir: Path) -> List[str]:
+    """Public wrapper that adds *bin_dir* to shell startup files."""
+    return _update_shell_path(bin_dir)
+
+
+def cleanup_leftovers(install_root: Path) -> List[str]:
+    """Remove staging directories and backups left by an interrupted install."""
+    removed: List[str] = []
+    root = Path(install_root)
+    for pattern in (".app.tmp-*", ".app.old"):
+        for leftover in root.glob(pattern):
+            shutil.rmtree(leftover, ignore_errors=True)
+            if not leftover.exists():
+                removed.append(str(leftover))
+    return removed
+
+
+def rewrite_launchers(
+    app_dir: Path,
+    bin_dir: Optional[Path] = None,
+    launchers: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    """(Re)write the generated launcher scripts so they point at *app_dir*.
+
+    Used by ``wob self repair``. Existing foreign executables named ``wob`` are
+    never replaced: only launchers carrying Wobble's marker are overwritten.
+    """
+    candidates: List[Path] = []
+    if launchers:
+        candidates.extend(Path(p) for p in launchers)
+    if bin_dir:
+        candidates.append(Path(bin_dir) / LAUNCHER_NAME)
+    candidates.extend(_candidate_launchers())
+
+    seen = set()
+    written: List[str] = []
+    failed: List[str] = []
+    skipped: List[str] = []
+    script = _launcher_script(app_dir, sys.executable or "python3")
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if candidate.exists() and not candidate.is_symlink() and not _is_our_launcher(candidate):
+                skipped.append(key)
+                continue
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if candidate.is_symlink() or candidate.exists():
+                candidate.unlink()
+            _write_executable(candidate, script)
+            written.append(key)
+        except OSError:
+            failed.append(key)
+    return {"written": written, "failed": failed, "skipped": skipped}
+
+
+def refresh_manifest(install_root: Optional[Path] = None) -> Dict[str, Any]:
+    """Recompute the manifest file hashes from the installed runtime.
+
+    ``wob self repair --accept-current`` uses this after a deliberate local
+    patch. It never touches project files.
+    """
+    root = Path(install_root).expanduser().resolve() if install_root else default_install_root()
+    manifest = _read_manifest(root)
+    if not manifest:
+        raise InstallerError("No install manifest found; run 'wob self install' first.")
+    app_dir = Path(manifest.get("app_dir", root / APP_DIRNAME))
+    if not app_dir.is_dir():
+        raise InstallerError(f"Installed runtime is missing: {app_dir}")
+
+    files: Dict[str, Dict[str, Any]] = {}
+    total_bytes = 0
+    for path in _iter_files(app_dir):
+        rel = path.relative_to(app_dir).as_posix()
+        try:
+            size = path.stat().st_size
+            digest = _sha256_file(path)
+        except OSError:
+            continue
+        files[rel] = {"sha256": digest, "size": size}
+        total_bytes += size
+
+    manifest["files"] = files
+    manifest["file_count"] = len(files)
+    manifest["total_bytes"] = total_bytes
+    manifest["verified_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    atomic_write_json(manifest_path(root), manifest)
+    return {"ok": True, "file_count": len(files), "total_bytes": total_bytes,
+            "install_root": str(root)}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def _hash_tree(root: Path, workers=None):
+    """Hash every file under *root* in parallel.
+
+    SHA-256 of a few hundred small files is I/O bound; on a phone the thread
+    pool still helps because each read releases the GIL. Ordering stays stable
+    so manifests are diffable across installs.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    paths = list(_iter_files(root))
+    if not paths:
+        return {}, 0
+    workers = workers or min(8, max(2, (os.cpu_count() or 2) * 2), len(paths))
+
+    def one(path: Path):
+        rel = path.relative_to(root).as_posix()
+        try:
+            return rel, path.stat().st_size, _sha256_file(path)
+        except OSError:
+            return rel, None, None
+
+    results = []
+    if len(paths) < 4:
+        results = [one(path) for path in paths]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(one, paths))
+
+    files: Dict[str, Dict[str, Any]] = {}
+    total = 0
+    for rel, size, digest in results:
+        if size is None or digest is None:
+            continue
+        files[rel] = {"sha256": digest, "size": size}
+        total += size
+    return files, total
+
+
 def install(
     source_root: Optional[Path] = None,
     install_root: Optional[Path] = None,
@@ -441,17 +616,7 @@ def install(
     completion_files = _install_completions(root) if completions else []
     touched_shells = _update_shell_path(bin_path) if update_path else []
 
-    files: Dict[str, Dict[str, Any]] = {}
-    total_bytes = 0
-    for path in _iter_files(app_dir):
-        rel = path.relative_to(app_dir).as_posix()
-        try:
-            size = path.stat().st_size
-            digest = _sha256_file(path)
-        except OSError:
-            continue
-        files[rel] = {"sha256": digest, "size": size}
-        total_bytes += size
+    files, total_bytes = _hash_tree(app_dir)
 
     manifest = {
         "schema": INSTALL_SCHEMA,
@@ -558,27 +723,72 @@ def uninstall(
     }
 
 
+def _launcher_state(path: Path) -> Dict[str, Any]:
+    """Describe a launcher path without executing anything."""
+    state = {
+        "path": str(path),
+        "exists": False,
+        "is_ours": False,
+        "executable": False,
+        "app_dir": None,
+    }
+    try:
+        state["exists"] = path.exists() or path.is_symlink()
+        if not state["exists"]:
+            return state
+        state["is_ours"] = _is_our_launcher(path)
+        state["executable"] = os.access(str(path), os.X_OK)
+        if path.is_file() and not path.is_symlink():
+            text = path.read_text(encoding="utf-8", errors="ignore")[:4096]
+            for line in text.splitlines():
+                if line.startswith("APP="):
+                    state["app_dir"] = line.split("=", 1)[1].strip().strip("'\"")
+                    break
+    except OSError:
+        pass
+    return state
+
+
 def status(install_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Report whether Wobble is installed standalone, or via a legacy symlink."""
+    """Report the installation mode, layout, and quick health signals.
+
+    This is intentionally cheap: no file hashing and no subprocesses. It answers
+    "is this a standalone install, and do the pieces still line up?" in a few
+    milliseconds so ``wob self status`` can run on every shell prompt.
+    """
+    started = time.monotonic()
     root = Path(install_root).expanduser().resolve() if install_root else default_install_root()
     manifest = _read_manifest(root)
-    launcher = default_bin_dir() / LAUNCHER_NAME
+    default_launcher = default_bin_dir() / LAUNCHER_NAME
 
     if not manifest:
         legacy = None
         try:
-            if launcher.is_symlink():
-                legacy = os.readlink(str(launcher))
+            if default_launcher.is_symlink():
+                legacy = os.readlink(str(default_launcher))
         except OSError:
             legacy = None
+        launcher_exists = default_launcher.exists() or default_launcher.is_symlink()
         return {
             "installed": False,
             "mode": "legacy-symlink" if legacy else "source-checkout",
-            "install_root": str(root),
-            "launcher": str(launcher) if (launcher.exists() or launcher.is_symlink()) else None,
-            "legacy_target": legacy,
             "standalone": False,
+            "install_root": str(root),
+            "manifest": str(manifest_path(root)),
+            "launcher": str(default_launcher) if launcher_exists else None,
+            "launchers": [],
+            "legacy_target": legacy,
             "version": __version__,
+            "manifest_version": None,
+            "python": sys.executable or "python3",
+            "healthy": False,
+            "launcher_ok": False,
+            "runtime_ok": False,
+            "file_count": 0,
+            "total_bytes": 0,
+            "installed_at": None,
+            "in_path": str(default_launcher.parent) in os.environ.get("PATH", "").split(os.pathsep),
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
             "message": (
                 "Legacy symlink install detected: deleting the source checkout breaks 'wob'."
                 if legacy else
@@ -587,70 +797,211 @@ def status(install_root: Optional[Path] = None) -> Dict[str, Any]:
         }
 
     app_dir = Path(manifest.get("app_dir", root / APP_DIRNAME))
-    launcher_path = Path(manifest.get("launcher", launcher))
+    launcher_path = Path(manifest.get("launcher", default_launcher))
     source = manifest.get("source")
+
+    runtime_ok = bool(
+        app_dir.is_dir()
+        and (app_dir / "wob.py").is_file()
+        and (app_dir / "wobble" / "cli.py").is_file()
+    )
+    launcher_state = _launcher_state(launcher_path)
+    launcher_ok = bool(
+        launcher_state["exists"]
+        and launcher_state["is_ours"]
+        and launcher_state["executable"]
+        and launcher_state["app_dir"] in (None, str(app_dir))
+    )
+    bin_dir = launcher_path.parent
+    in_path = str(bin_dir) in os.environ.get("PATH", "").split(os.pathsep)
+
     data = {
         "installed": True,
         "mode": "standalone",
         "standalone": True,
-        "version": manifest.get("version"),
+        "version": __version__,
+        "manifest_version": manifest.get("version"),
+        "manifest_schema": manifest.get("schema"),
         "installed_at": manifest.get("installed_at"),
         "install_root": str(root),
+        "manifest": str(manifest_path(root)),
         "app_dir": str(app_dir),
-        "launcher": str(launcher_path) if launcher_path.exists() else None,
+        "launcher": str(launcher_path) if launcher_state["exists"] else None,
+        "launcher_expected": str(launcher_path),
+        "launcher_ok": launcher_ok,
+        "launcher_state": launcher_state,
         "launchers": manifest.get("launchers", []),
+        "bin_dir": str(bin_dir),
+        "in_path": in_path,
         "completions": manifest.get("completions", []),
         "python": manifest.get("python"),
+        "python_running": sys.executable or "python3",
         "file_count": manifest.get("file_count", 0),
         "total_bytes": manifest.get("total_bytes", 0),
+        "runtime_ok": runtime_ok,
+        "healthy": runtime_ok and launcher_ok,
         "source": source,
         "source_exists": bool(source and Path(source).exists()),
-        "healthy": app_dir.is_dir() and (app_dir / "wob.py").is_file(),
+        "version_matches": manifest.get("version") == __version__,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 2),
     }
     if not data["source_exists"]:
         data["message"] = "Source checkout is gone, but the installed runtime is independent of it."
+    if not runtime_ok:
+        data["message"] = "The installed runtime is incomplete; run 'wob self repair'."
+    elif not launcher_ok:
+        data["message"] = "The launcher is missing, not executable, or points elsewhere; run 'wob self repair'."
     return data
 
 
-def verify(install_root: Optional[Path] = None) -> Dict[str, Any]:
-    """Check installed files against the manifest hashes."""
+def _verify_tree(app_dir: Path, files: dict, parallel: bool = True) -> dict:
+    """Check manifest entries against the installed tree.
+
+    Small installs (~60 files, ~0.5 MB) are faster to hash serially: spawning a
+    thread pool costs more than the reads. The pool only pays for itself once
+    there is real work, so the threshold is deliberate rather than "always
+    parallel".
+    """
+    started = time.monotonic()
+    missing = []
+    modified = []
+    unreadable = []
+    checked = 0
+    hashed_bytes = 0
+    rels = sorted(files)
+
+    def one(rel: str):
+        meta = files.get(rel) or {}
+        target = app_dir / rel
+        try:
+            stat_result = target.stat()
+        except OSError:
+            return rel, "missing", 0
+        if not target.is_file():
+            return rel, "missing", 0
+        expected_size = meta.get("size", -1)
+        if expected_size != stat_result.st_size:
+            return rel, "modified", 0
+        try:
+            digest = _sha256_file(target)
+        except OSError:
+            return rel, "unreadable", stat_result.st_size
+        if digest != meta.get("sha256"):
+            return rel, "modified", stat_result.st_size
+        return rel, "ok", stat_result.st_size
+
+    total_bytes = sum(int((files.get(rel) or {}).get("size", 0) or 0) for rel in rels)
+    use_pool = bool(parallel) and (len(rels) >= 64 or total_bytes >= 1_500_000)
+
+    if not rels:
+        results = []
+    elif not use_pool:
+        results = [one(rel) for rel in rels]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = min(8, max(2, (os.cpu_count() or 2) * 2), len(rels))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(one, rels))
+
+    for rel, verdict, size in results:
+        if verdict == "ok":
+            checked += 1
+            hashed_bytes += size
+        elif verdict == "modified":
+            modified.append(rel)
+        elif verdict == "unreadable":
+            unreadable.append(rel)
+        else:
+            missing.append(rel)
+
+    return {
+        "checked": checked,
+        "missing": missing,
+        "modified": modified,
+        "unreadable": unreadable,
+        "hashed_bytes": hashed_bytes,
+        "parallel": use_pool,
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+    }
+
+
+def verify(install_root: Optional[Path] = None, parallel: bool = True,
+           workers: Optional[int] = None) -> Dict[str, Any]:
+    """Check installed files against the manifest hashes.
+
+    Hashing runs on a small thread pool (``parallel=False`` forces serial
+    verification for debugging). Results list every problem file, so callers
+    can print more than the first handful.
+    """
+    started = time.monotonic()
     root = Path(install_root).expanduser().resolve() if install_root else default_install_root()
     manifest = _read_manifest(root)
     if not manifest:
-        return {"ok": False, "error": "No install manifest found", "install_root": str(root)}
+        return {
+            "ok": False,
+            "error": "No install manifest found",
+            "error_code": "installation_manifest_missing",
+            "hint": "Install Wobble as software with: sh install.sh  (or: wob self install)",
+            "install_root": str(root),
+            "checked": 0,
+            "file_count": 0,
+            "missing": [],
+            "modified": [],
+            "unreadable": [],
+            "launcher_ok": False,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+        }
 
     app_dir = Path(manifest.get("app_dir", root / APP_DIRNAME))
-    files = manifest.get("files", {})
-    missing: List[str] = []
-    modified: List[str] = []
-    checked = 0
+    files = manifest.get("files", {}) if isinstance(manifest.get("files"), dict) else {}
+    report = _verify_tree(app_dir, files, parallel=parallel)
 
-    for rel, meta in files.items():
-        target = app_dir / rel
-        if not target.is_file():
-            missing.append(rel)
-            continue
-        checked += 1
-        try:
-            if target.stat().st_size != meta.get("size", -1) or _sha256_file(target) != meta.get("sha256"):
-                modified.append(rel)
-        except OSError:
-            missing.append(rel)
+    if not files:
+        return {
+            "ok": False,
+            "error": "Install manifest contains no file hashes.",
+            "error_code": "installation_manifest_invalid",
+            "hint": "Reinstall with: wob self install  (or: sh install.sh)",
+            "install_root": str(root),
+            "app_dir": str(app_dir),
+            "checked": 0,
+            "file_count": 0,
+            "missing": [],
+            "modified": [],
+            "unreadable": [],
+            "hashed_bytes": 0,
+            "launcher_ok": False,
+            "parallel": False,
+            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+        }
 
     launcher = Path(manifest.get("launcher", default_bin_dir() / LAUNCHER_NAME))
     launcher_ok = _is_our_launcher(launcher)
-    ok = not missing and not modified and launcher_ok
-    return {
+    ok = not report["missing"] and not report["modified"] and not report["unreadable"] and launcher_ok
+    data = {
         "ok": ok,
         "version": manifest.get("version"),
-        "checked": checked,
+        "running_version": __version__,
+        "checked": report["checked"],
         "file_count": len(files),
-        "missing": missing,
-        "modified": modified,
+        "missing": report["missing"],
+        "modified": report["modified"],
+        "unreadable": report["unreadable"],
+        "hashed_bytes": report["hashed_bytes"],
         "launcher_ok": launcher_ok,
         "install_root": str(root),
+        "app_dir": str(app_dir),
+        "parallel": report["parallel"],
+        "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
         "source_exists": bool(manifest.get("source") and Path(manifest["source"]).exists()),
     }
+    if not ok:
+        data["hint"] = (
+            "Reinstall with: wob self install  (or: sh install.sh). "
+            "Runtime files are never patched in place."
+        )
+    return data
 
 
 def uninstall_legacy_symlink() -> Optional[str]:

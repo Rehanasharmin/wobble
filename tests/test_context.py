@@ -52,3 +52,40 @@ class TestContext(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAndroidPropertyParsing(unittest.TestCase):
+    def test_parse_getprop_output(self):
+        from wobble.core.context import parse_getprop_output
+
+        output = "\n".join([
+            "[ro.build.version.release]: [15]",
+            "[ro.build.version.sdk]: [35]",
+            "[ro.product.model]: [Pixel 8 Pro]",
+            "malformed line",
+            "[empty]: []",
+        ])
+        props = parse_getprop_output(output)
+        self.assertEqual(props["ro.build.version.release"], "15")
+        self.assertEqual(props["ro.build.version.sdk"], "35")
+        # Values may contain spaces; they must survive intact.
+        self.assertEqual(props["ro.product.model"], "Pixel 8 Pro")
+        self.assertNotIn("empty", props)
+        self.assertNotIn("malformed line", props)
+
+    def test_parse_getprop_handles_empty_input(self):
+        from wobble.core.context import parse_getprop_output
+
+        self.assertEqual(parse_getprop_output(""), {})
+        self.assertEqual(parse_getprop_output(None), {})
+
+
+class TestMountInfo(unittest.TestCase):
+    def test_mount_info_for_existing_path(self):
+        from pathlib import Path
+        from wobble.core.context import get_mount_info
+
+        info = get_mount_info(str(Path.home()))
+        self.assertIn("mountpoint", info)
+        self.assertIn("options", info)
+        self.assertTrue(info["mountpoint"].startswith("/"))

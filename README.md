@@ -14,7 +14,7 @@ Starting with version 1.2.0, Wobble installs like ordinary software rather than 
 |:---|:---|
 | **Original author** | Rehan Ashar Min and [contributors](https://github.com/Rehanasharmin/wobble/graphs/contributors) |
 | **Initial release** | 3 October 2026 |
-| **Stable release** | 1.2.0 (21 October 2026) |
+| **Stable release** | 1.3.0 (23 October 2026) |
 | **Written in** | Python 3, POSIX shell |
 | **Platform** | Termux on Android; mainstream Linux distributions |
 | **Type** | Command-line development harness, build tool, project scaffold |
@@ -86,6 +86,8 @@ Wobble was created by Rehan Ashar Min in October 2026 to consolidate ad-hoc Term
 
 Version 1.1.0 (17 October 2026) focused on user experience, performance, and stability: command startup was made lazy so trivial commands avoid importing heavyweight modules, environment diagnostics began probing tools concurrently, the web preview server became multi-threaded, configuration and registry files started being written atomically with corruption recovery, shell completion was added, and typo suggestions were introduced across framework, plugin, and configuration names.
 
+Version 1.3.0 (23 October 2026) turned self-diagnosis into a first-class subsystem. `wob self status` was rebuilt as a fast, structured health engine that inspects manifest integrity, runtime file sizes, bytecode coverage, launcher target, PATH shadowing, completions, config/registry validity, disk space, noexec storage, interrupted-install debris, and the incident ledger in a few milliseconds; `--deep` adds parallel SHA-256 verification and an import smoke test. New `wob self repair` fixes launchers, bytecode, completions, debris, and corrupt config without weakening integrity, `wob self watch` reports breakage live, and `wob self incidents` exposes the crash ledger that the bootstrap now records. `wob doctor` gained a self-invalidating probe cache (tool versions are re-used until the binary changes), regression detection against the previous run with persistent-failure tracking, category filters, section timings, a `Wobble Runtime` category, and CI-friendly `--strict` / `--fail-on` exit codes. Android property reads collapsed from four `getprop` subprocesses into one cached table, and the startup path stopped importing `typing`, `json`, `hashlib`, `socket`, `tempfile`, and `concurrent.futures` unless a command needs them — `wob --version` dropped from 20 ms to 12 ms and `wob doctor --json` from ~119 ms to ~54 ms on the reference sandbox.
+
 Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer with a standalone application installer (copy + manifest + precompiled bytecode + generated launcher), added `wob self status/verify/install/uninstall`, a `--version` fast path that bypasses argument parsing, memoized environment probes, a dependency-free ASCII theme (wordmark, rules, boxes, badges, meters), hardened preview defaults (localhost-only, dotfile/secret blocking, no directory listings, symlink-escape prevention), gzip-compressed preview responses, strict project-name/package validation, trust checks for user plugins, environment-variable keystore passwords, and global flags that work on either side of the subcommand.
 
 ---
@@ -94,12 +96,12 @@ Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer 
 
 | Area | Capability |
 |:---|:---|
-| **Environment doctor** | `wob doctor` audits CPU architecture, Android version, RAM, disk space, Java/Gradle/SDK, Node.js, Python, PHP, Git, and ADB; every failed check ships with a copy-paste `pkg install` fix. Tool version probes run concurrently. |
+| **Environment doctor** | `wob doctor` audits CPU architecture, Android version, RAM, disk space, PATH integrity, mount flags, Java/Gradle/SDK, Node.js, Python, PHP, Git, ADB, and the Wobble installation itself; every failed check ships with a copy-paste `pkg install` fix. Probes run concurrently and are cached until the underlying binary changes, and each run is diffed against the previous one so regressions and persistent failures stand out. `--only`, `--timings`, `--strict`, and `--fail-on` make it scriptable. |
 | **Android projects** | `wob create android` scaffolds a complete Gradle project (`build.gradle`, `settings.gradle`, `gradle.properties`, manifest, activity, resources) with memory-safe defaults: daemon disabled, `-Xmx1024m` heap, single-worker builds. |
 | **APK tooling** | Locate build outputs automatically; inspect package name, version, min/target SDK, permissions, native ABIs, DEX entries, and SHA-256 using `aapt`/`aapt2` when present or a pure-Python binary-XML fallback when not. Sign with `apksigner`; export to the Android Download folder. |
 | **On-device installation** | `wob apk install` opens the system package installer through `termux-open`, `termux-am`, or `adb`, with `--method` to force a specific transport. |
 | **Standalone install** | `sh install.sh` copies the runtime into `~/.local/share/wobble/app`, writes a manifest with SHA-256 hashes, precompiles bytecode, generates a self-contained `~/.local/bin/wob` launcher, installs bash/zsh completions, and optionally updates `PATH`. The source checkout can be deleted afterwards. |
-| **Self-management** | `wob self status` shows install mode and source independence; `wob self verify` re-hashes every installed file; `wob self uninstall` (or `sh uninstall.sh`) removes Wobble while preserving projects and, unless `--purge` is passed, config. |
+| **Self-management** | `wob self status` is a full health report (runtime files, bytecode, launcher target, PATH shadowing, completions, config, disk, incidents) with stable check codes and a health score; `--deep` adds hashing and an import smoke test. `wob self verify` re-hashes every installed file in parallel, `wob self repair` fixes what can be fixed without weakening integrity, `wob self watch` reports breakage live, `wob self incidents` shows the crash ledger, and `wob self uninstall` (or `sh uninstall.sh`) removes Wobble while preserving projects and, unless `--purge` is passed, config. |
 | **Web projects** | Scaffolds Vite, React, Vue, Svelte, Next.js, Python, PHP, and static sites. Dev servers bind to localhost by default; `--lan` exposes them on the local network. `wob web preview` serves a zero-dependency static server with SPA history fallback. |
 | **Hardened preview** | Dotfiles (`.git`, `.env`), credential files (`*.pem`, `*.jks`, `id_rsa`, `local.properties`), directory listings, path traversal, and symlink escapes are blocked. Responses are gzip-compressed with a small in-memory cache and HTTP/1.1 keep-alive. |
 | **LAN preview** | `wob preview --lan` prints the local and LAN URLs and shows an explicit Wi-Fi exposure warning, enabling cross-device testing without silently exposing project sources on public networks. |
@@ -126,7 +128,10 @@ Wobble is organized as a set of small, single-purpose Python packages. Subcomman
 | `wobble/core/completions.py` | Bash and zsh completion scripts shared by `wob completion` and the installer |
 | `wobble/core/context.py` | Runtime detection: Termux, architecture, RAM, storage, Android properties, LAN IP |
 | `wobble/core/executor.py` | Safe subprocess execution with timeouts, environment injection, and streaming |
-| `wobble/core/doctor.py` | Parallelized environment diagnostics with actionable fixes |
+| `wobble/core/doctor.py` | Parallelized, cached environment diagnostics with actionable fixes and regression detection |
+| `wobble/core/selfcheck.py` | Self-health engine: findings, health score, deep verification, and repair orchestration |
+| `wobble/core/health.py` | Incident ledger and doctor snapshots (regressions, recoveries, persistent failures) |
+| `wobble/core/probecache.py` | Self-invalidating disk cache for expensive environment probes |
 | `wobble/core/config.py` | Persistent settings in `~/.config/wobble/config.json` with corruption recovery |
 | `wobble/core/fsutil.py` | Atomic file writes (temp file + rename) for crash-safe persistence |
 | `wobble/core/schema.py` | JSON schema of every command for AI agents |
@@ -193,11 +198,20 @@ Installer options:
 ### Verify, upgrade, uninstall
 
 ```bash
-wob self status      # install mode, app dir, launcher, source independence
-wob self verify      # SHA-256 check of every installed file
-wob self install     # reinstall/upgrade from the current checkout
-wob self uninstall   # remove Wobble, keep projects (--purge removes config too)
+wob self status          # fast health report (runtime, launcher, PATH, config, history)
+wob self status --deep   # + SHA-256 of every file and an import smoke test
+wob self verify          # parallel SHA-256 check of every installed file
+wob self repair          # fix launchers, bytecode, completions, debris, corrupt config
+wob self watch           # watch for breakage live (prints only changes)
+wob self incidents       # show the recorded failure ledger (--clear to reset)
+wob self install         # reinstall/upgrade from the current checkout
+wob self uninstall       # remove Wobble, keep projects (--purge removes config too)
 ```
+
+`wob self status` exits `0` when the installation is healthy or merely degraded,
+and `1` when it is broken (add `--strict` to fail on warnings too). Every finding
+has a stable `code` (`runtime.files`, `launcher.present`, `installer.leftovers`,
+`history.incidents`, …) so scripts and agents can assert on the exact problem.
 
 Or, without a working `wob` command:
 
@@ -267,7 +281,7 @@ The server is threaded, uses HTTP/1.1 keep-alive, gzip-compresses text assets wi
 
 | Command | Description |
 |:---|:---|
-| `wob doctor [--quick]` | Run system diagnostics; `--quick` skips slow tool version probes |
+| `wob doctor [--quick] [--only cats] [--strict] [--fail-on lvl] [--timings] [--no-cache]` | Cached system diagnostics with regression detection and CI-friendly exit codes |
 | `wob create android <name> [-p pkg]` | Scaffold a native Android Gradle project |
 | `wob create web <name> [-f framework]` | Scaffold a web app (`vite`, `react`, `vue`, `svelte`, `nextjs`, `python`, `php`, `static`) |
 | `wob project list / info / open / remove` | Manage the project registry |
@@ -285,7 +299,11 @@ The server is threaded, uses HTTP/1.1 keep-alive, gzip-compresses text assets wi
 | `wob deps install [stack] / add / remove / doctor / list` | Unified dependency management (`pkg`, `npm`, `pip`, `composer`) |
 | `wob plugin list / info <name>` | Inspect framework plugins and prerequisites |
 | `wob config list / get / set` | Persistent user configuration |
-| `wob self status / verify` | Inspect the standalone installation and verify file hashes |
+| `wob self status [--deep] [--brief] [--strict]` | Fast health report; `--deep` hashes files and smoke-tests imports |
+| `wob self verify [--serial]` | Parallel SHA-256 verification against the install manifest |
+| `wob self repair [--path] [--accept-current]` | Fix launchers, bytecode, completions, debris, and corrupt config |
+| `wob self watch [--interval s] [--count n]` | Continuously watch installation health; prints only changes |
+| `wob self incidents [--limit n] [--clear]` | Show or clear the recorded failure ledger |
 | `wob self install / uninstall` | Install or remove the standalone runtime |
 | `wob install` / `wob uninstall` | Short aliases for `self install` / `self uninstall` |
 | `wob clean [--all] [-y]` | Remove build artifacts and caches (`--all` adds `node_modules`, Gradle caches; prompts first) |
@@ -302,15 +320,22 @@ Global flags: `--json`, `--no-color`, `--verbose`, `--version`. They may appear 
 
 ## Performance
 
-Version 1.2.0 adds a fast path that answers `wob --version`, `wob version`, and plain `wob` without importing `argparse`, `difflib`, or any subcommand module. Representative measurements on an x86_64 Linux sandbox with Python 3.11 (median of repeated cold-process runs; phone timings will be higher, but the ratios hold):
+Version 1.3.0 keeps the 1.2.0 fast paths and removes the import cost that still sat on the startup path. Representative measurements on an x86_64 Linux sandbox with Python 3.11 (median of repeated cold-process runs; phone timings will be higher, but the ratios hold). Full methodology and the raw JSON are in [`benchmarks/`](benchmarks/):
 
-| Command | 1.1.0 | 1.2.0 | Change |
+| Command | 1.2.0 | 1.3.0 | Change |
 |:---|---:|---:|---:|
-| `wob --version` (`python -m` entry) | 38 ms | **22 ms** | ~42% faster |
-| `wob --version` (launcher) | 42 ms | **25 ms** | ~40% faster |
-| `wob doctor --json` (full) | 146 ms | 146 ms | — |
-| `wob doctor --json --quick` | — | **58 ms** | ~2.5× faster than full |
-| `wob plugin list` | 52 ms | 54 ms | parity after adding security checks |
+| `wob --version` | 19 ms | **13 ms** | 1.5× faster |
+| `wob self status` | 42 ms | **37 ms** | faster *and* ~10× more checks |
+| `wob doctor --json` (warm probe cache) | 122 ms | **58 ms** | **2.1× faster** |
+| `wob doctor --json` (first run, cold cache) | 137 ms | 139 ms | parity — it probes for real |
+| `wob doctor --json --no-cache` | — | 128 ms | explicit first-run measurement |
+| `wob doctor --only wobble` | — | 46 ms | installation-only check, no tool probes |
+| `installed: wob self status` | 44 ms | **36 ms** | 1.2× faster |
+| `installed: wob self verify` | 49 ms | **40 ms** | 1.2× faster |
+| `installed: wob doctor --json` | 131 ms | **62 ms** | **2.1× faster** |
+
+Run `python3 benchmarks/bench.py --compare <baseline-checkout>` to reproduce, or
+add `--fail-under 1.25` to use it as a regression gate.
 
 Additional optimizations:
 
@@ -318,7 +343,11 @@ Additional optimizations:
 - **Precompiled bytecode.** The installer runs `compileall` over the entire package, so the first run after installation does not pay compilation cost.
 - **Module-name plugin imports.** Nine built-in plugins load through `importlib.import_module` (bytecode-cached, deterministic order) instead of parsing files from arbitrary paths on every invocation. `typing` was removed from the startup-critical modules.
 - **Memoized environment probes.** Termux detection, architecture, Android SDK candidates, Java homes, Android properties, and the LAN IP are computed once per process; config lookup no longer creates directories as a side effect.
-- **Concurrent diagnostics.** `wob doctor` still probes tool versions in parallel, and `--quick` replaces eight subprocess probes with pure PATH lookups.
+- **Concurrent diagnostics.** `wob doctor` probes tool versions in a small thread pool, and `--quick` replaces subprocess probes with pure PATH lookups.
+- **Self-invalidating probe cache.** Version results are stored in `~/.wobble/cache/probes.json` keyed by the executable's inode fingerprint (`st_dev`, `st_ino`, `mtime_ns`, `st_size`) with a one-hour TTL. A warm `wob doctor` spawns no probe subprocesses at all; upgrading a tool invalidates its entry automatically. `--no-cache` (or `WOBBLE_NO_CACHE=1`) opts out.
+- **One `getprop` call, not four.** Android build properties are fetched as a single table (with a build.prop fallback) and memoized, removing three subprocess spawns from every run that displays the Android version.
+- **Lazy heavy imports.** `concurrent.futures` (which pulls in `logging`), `hashlib`, `socket`, `tempfile`, `platform`, `typing`, and `json` load only when a command needs them. `tests/test_startup.py` fails the suite if they creep back in.
+- **Parallel only when it pays.** `wob self verify` hashes in a thread pool for large trees, but hashes serially for a typical ~60-file install where pool overhead exceeds the reads.
 - **Gzip + keep-alive preview.** Text assets ≥1 KiB are compressed (typical 5 KB HTML: ~40 bytes on the wire) and cached in memory; HTTP/1.1 keep-alive avoids a new connection per asset.
 - **Threaded preview server.** Each request runs on a daemon thread, so one slow client cannot stall others.
 - **Pruned file walks.** APK discovery, project metrics, cleans, and greps skip `.git`, `node_modules`, `.gradle`, `.venv`, and similar directories; symlinked build directories are never followed.
@@ -335,6 +364,8 @@ Additional optimizations:
 - **Graceful interrupts.** `Ctrl+C` terminates the child process group, exits with status 130, and escalates cleanup if a child does not stop promptly. Finite commands have timeouts; interactive servers intentionally run until stopped.
 - **Defensive project state.** Stale registry entries are pruned in a batched write, malformed entries are ignored, and a malformed `wobble.json` produces an explicit repair error instead of being misreported as “no project found.”
 - **Honest partial completion.** Cleanup reports every path it could not remove and exits non-zero. Project creation can succeed with an explicit registry warning rather than falsely reporting that scaffolding failed.
+- **Health memory.** Unexpected failures are recorded in a capped ledger (`~/.wobble/health/incidents.json`), so a crash is still visible in `wob self status` on the next day instead of vanishing into terminal scrollback. `wob doctor` stores each run's check statuses and reports what regressed, what recovered, and what has been failing for days.
+- **Honest repair.** `wob self repair` rewrites launchers, recompiles bytecode, removes install debris, and backs up corrupt config, but it never fabricates a passing integrity check: missing or modified runtime files are reported as unresolved with a reinstall instruction unless `--accept-current` is passed explicitly.
 - **Strict input validation.** Project names must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, Android package IDs must be reverse-DNS identifiers, and TCP ports must be in `1..65535`. Scaffolding into a symlink is refused.
 
 ### Error output and exit codes
@@ -373,7 +404,7 @@ Human errors include a concise cause and, when known, a `Hint:` with the next re
 - **Keystore passwords are not argv.** `wob apk sign` passes credentials to `apksigner` through `WOBBLE_KS_PASS` (`env:` protocol), so they do not appear in `ps` output.
 - **Installation integrity.** The installer writes a SHA-256 manifest and `wob self verify` re-hashes the installed tree. `wob self status` reports whether the runtime is source-independent, and the launcher refuses to run from a damaged app directory with a clear reinstall message.
 - **Safer uninstall.** Uninstall removes only files that carry Wobble's generated-launcher marker or completion signature; foreign executables are reported and kept. Project directories are never touched; config is kept unless `--purge` is given.
-- **Full test coverage.** 161 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON success/error contracts, installer isolation, preview security, plugin trust rules, persistence recovery, partial failures, input validation, and the safety properties above.
+- **Full test coverage.** 234 automated tests verify parsing, scaffolding, detection, executor behavior, doctor reporting, JSON success/error contracts, installer isolation, preview security, plugin trust rules, persistence recovery, partial failures, input validation, and the safety properties above.
 
 ---
 
@@ -394,10 +425,16 @@ Wobble reports its constraints honestly via `wob android limitations`:
 Wobble is designed to be driven by scripts and coding agents:
 
 ```bash
-wob --json doctor          # structured environment report
-wob --json project list    # parseable project inventory
-wob schema                 # complete JSON schema of commands and host metrics
+wob --json doctor                 # structured environment report + regressions
+wob --json doctor --fail-on error # non-zero exit only for hard failures
+wob --json self status            # structured installation health + stable codes
+wob --json project list           # parseable project inventory
+wob schema                        # complete JSON schema of commands and host metrics
 ```
+
+`wob self status` and `wob doctor` both expose `exit_code` in their JSON
+documents, so a CI job can distinguish "broken" from "degraded" without parsing
+text.
 
 Conventions for agents (`AI_GUIDE.md`):
 
@@ -413,7 +450,8 @@ Conventions for agents (`AI_GUIDE.md`):
 ```bash
 git clone https://github.com/Rehanasharmin/wobble.git
 cd wobble
-python3 tests/run_tests.py     # 161 tests, standard library only
+python3 tests/run_tests.py     # 234 tests, standard library only
+python3 benchmarks/bench.py     # CLI latency benchmark (see benchmarks/README.md)
 sh install.sh                  # install the standalone application
 ```
 

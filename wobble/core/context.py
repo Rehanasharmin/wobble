@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
-import platform
 import shutil
-import socket
 from functools import lru_cache
 from pathlib import Path
 
@@ -64,6 +62,8 @@ def get_wobble_config_path() -> Path:
 @lru_cache(maxsize=1)
 def get_architecture() -> str:
     """Detect machine architecture normalized to standard naming."""
+    import platform
+
     raw = platform.machine().lower()
     if raw in ("aarch64", "arm64", "armv8l", "armv8"):
         return "aarch64"
@@ -76,55 +76,86 @@ def get_architecture() -> str:
     return raw
 
 
-@lru_cache(maxsize=64)
-def get_android_property(prop_name: str) -> Optional[str]:
-    """Read an Android system property via /system/bin/getprop or build.prop without shell parsing.
+def parse_getprop_output(output: str) -> Dict[str, str]:
+    """Parse the table printed by a bare ``getprop`` call.
 
-    Results are cached per process because each lookup may spawn a getprop
-    subprocess and property values cannot change while a Wobble command runs.
+    Lines look like ``[ro.build.version.release]: [15]``. Malformed lines are
+    skipped rather than raising, because vendor builds occasionally emit junk.
     """
+    props: Dict[str, str] = {}
+    for line in (output or "").splitlines():
+        line = line.strip()
+        if not line.startswith("[") or "]: [" not in line:
+            continue
+        key, _, rest = line[1:].partition("]: [")
+        value = rest[:-1] if rest.endswith("]") else rest
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            props[key] = value
+    return props
+
+
+@lru_cache(maxsize=1)
+def _android_properties() -> Dict[str, str]:
+    """Read every Android system property in a single ``getprop`` call.
+
+    The previous implementation spawned one ``getprop`` subprocess per property
+    (four of them just to fill in the Android version row). Process creation is
+    the single most expensive thing on a phone, so the whole property table is
+    fetched once, parsed, and cached for the process lifetime.
+    """
+    props: Dict[str, str] = {}
     getprop_bin = shutil.which("getprop") or "/system/bin/getprop"
     if os.path.exists(getprop_bin):
         try:
             import subprocess
-            res = subprocess.run([getprop_bin, prop_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2)
-            if res.returncode == 0:
-                val = res.stdout.strip()
-                if val:
-                    return val
+            res = subprocess.run(
+                [getprop_bin], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=4,
+            )
+            if res.returncode == 0 and res.stdout:
+                props = parse_getprop_output(res.stdout)
         except Exception:
-            pass
+            props = {}
 
-    # Fallback to reading /system/build.prop if accessible
-    for bp in ["/system/build.prop", "/default.prop"]:
-        if os.path.exists(bp):
+    if not props:
+        # Fallback: read the property files directly (no subprocess).
+        for bp in ("/system/build.prop", "/vendor/build.prop", "/default.prop"):
+            if not os.path.exists(bp):
+                continue
             try:
-                with open(bp, "r", encoding="utf-8", errors="ignore") as f:
-                    for line in f:
-                        if line.startswith(f"{prop_name}="):
-                            return line.split("=", 1)[1].strip()
-            except Exception:
-                pass
-    return None
+                with open(bp, "r", encoding="utf-8", errors="ignore") as handle:
+                    for line in handle:
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#") or "=" not in stripped:
+                            continue
+                        key, value = stripped.split("=", 1)
+                        props.setdefault(key.strip(), value.strip())
+            except OSError:
+                continue
+    return props
+
+
+def get_android_property(prop_name: str) -> Optional[str]:
+    """Read an Android system property from the cached property table."""
+    return _android_properties().get(prop_name)
 
 
 def get_android_version() -> Dict[str, Optional[str]]:
-    """Detect Android release version and API level."""
-    release = get_android_property("ro.build.version.release")
-    sdk = get_android_property("ro.build.version.sdk")
-    device_model = get_android_property("ro.product.model")
-    device_brand = get_android_property("ro.product.brand")
-
+    """Detect Android release version and API level from the cached table."""
+    props = _android_properties()
     return {
-        "release": release,
-        "api_level": sdk,
-        "model": device_model,
-        "brand": device_brand
+        "release": props.get("ro.build.version.release"),
+        "api_level": props.get("ro.build.version.sdk"),
+        "model": props.get("ro.product.model"),
+        "brand": props.get("ro.product.brand"),
     }
 
 
+@lru_cache(maxsize=1)
 def get_termux_version() -> Optional[str]:
-    """Detect Termux application version."""
+    """Detect the Termux application/tools version (cached)."""
     if "TERMUX_VERSION" in os.environ:
         return os.environ["TERMUX_VERSION"]
     # Check dpkg status for termux-tools or termux-am
@@ -134,13 +165,14 @@ def get_termux_version() -> Optional[str]:
             with open(dpkg_status, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
                 for block in content.split("\n\n"):
-                    if "Package: termux-tools" in block:
+                    if "Package: termux-tools" in block or "Package: termux-am" in block:
                         for line in block.splitlines():
                             if line.startswith("Version:"):
                                 return line.split(":", 1)[1].strip()
         except Exception:
             pass
     return None
+
 
 
 def get_storage_info(path: Optional[Path] = None) -> Dict[str, Any]:
@@ -207,6 +239,8 @@ def get_lan_ip() -> str:
     Falls back to 127.0.0.1 if offline. The result is cached for the process
     lifetime since network interfaces rarely change mid-command.
     """
+    import socket
+
     for remote in (("10.255.255.255", 1), ("8.8.8.8", 80)):
         # A fresh socket per attempt keeps failed connects from poisoning later tries.
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -301,6 +335,76 @@ def get_java_home_candidates() -> List[Path]:
     return candidates
 
 
+@lru_cache(maxsize=8)
+def get_mount_info(path: str) -> Dict[str, str]:
+    """Return the mount point, filesystem type, and options for *path*.
+
+    Android mounts shared storage with ``noexec`` and enforces W^X inside app
+    data directories; exposing the actual mount flags lets the doctor explain
+    an ``Exec format error`` or a refused binary instead of guessing.
+    """
+    try:
+        target = str(Path(path).expanduser().resolve())
+    except OSError:
+        target = str(path)
+
+    best = {"mountpoint": "", "fstype": "", "options": "", "source": ""}
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8", errors="ignore") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return best
+
+    def unescape(value: str) -> str:
+        # /proc/mounts escapes spaces/tabs as octal sequences.
+        return (value.replace("\\040", " ").replace("\\011", "\t")
+                .replace("\\012", "\n").replace("\\134", "\\"))
+
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        source, mountpoint, fstype, options = parts[0], unescape(parts[1]), parts[2], parts[3]
+        if mountpoint == "/" or target == mountpoint or target.startswith(mountpoint.rstrip("/") + "/"):
+            if len(mountpoint) >= len(best["mountpoint"]):
+                best = {
+                    "mountpoint": mountpoint,
+                    "fstype": fstype,
+                    "options": options,
+                    "source": source,
+                }
+    return best
+
+
+def is_shared_storage(path: Optional[Path] = None) -> bool:
+    """True when *path* lives on Android's shared (``/storage``) storage."""
+    target = Path(path or get_home())
+    try:
+        resolved = str(target.expanduser().resolve())
+    except OSError:
+        resolved = str(target)
+    return resolved.startswith(("/storage/", "/sdcard", "/mnt/sdcard", "/mnt/media_rw"))
+
+
+def get_python_info() -> Dict[str, Any]:
+    """Describe the interpreter running Wobble (no ``platform`` import)."""
+    implementation = getattr(sys.implementation, "name", "cpython")
+    display = {"cpython": "CPython", "pypy": "PyPy", "ironpython": "IronPython"}.get(
+        implementation, implementation)
+    return {
+        "executable": sys.executable or "python3",
+        "version": "%d.%d.%d" % sys.version_info[:3],
+        "version_info": list(sys.version_info[:3]),
+        "implementation": display,
+        "prefix": sys.prefix,
+    }
+
+
+def get_path_entries() -> List[str]:
+    """Split ``$PATH`` into entries, dropping empty segments."""
+    return [entry for entry in os.environ.get("PATH", "").split(os.pathsep) if entry]
+
+
 def _format_bytes(b: int) -> str:
     """Format bytes into human-readable string (KB, MB, GB)."""
     if b < 1024:
@@ -314,6 +418,8 @@ def _format_bytes(b: int) -> str:
 
 def get_full_environment_report() -> Dict[str, Any]:
     """Assemble a comprehensive dictionary of the environment state."""
+    import platform
+
     return {
         "termux": {
             "is_termux": is_termux(),

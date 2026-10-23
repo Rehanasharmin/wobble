@@ -10,7 +10,6 @@ import os
 import re
 import argparse
 from pathlib import Path
-from typing import List, Optional
 
 from wobble import __version__
 from wobble.core.errors import (
@@ -50,18 +49,28 @@ def _port_number(value: str) -> int:
     return port
 
 
+def _add_target_args(parser: argparse.ArgumentParser) -> None:
+    """Shared ``--root``/``--bin`` overrides for self-diagnostic subcommands."""
+    parser.add_argument("--root", help="Installation root to inspect (default: detected)")
+    parser.add_argument("--bin", help="Launcher directory to inspect (default: ~/.local/bin)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the main argument parser for Wobble CLI."""
     parser = WobbleArgumentParser(
         prog="wob",
         description="Wobble - the Termux development harness for Android and web projects",
         epilog="""examples:
-  wob doctor                        audit the environment before building
+  wob doctor                        audit the environment and detect regressions
+  wob doctor --only android --timings   focus on the SDK and show where time goes
   wob create android myapp          scaffold a native Android project
   wob create web site -f react      scaffold a React web project
   wob apk build && wob apk install  build and install a debug APK
   wob web preview --lan             preview on localhost and your Wi-Fi
-  wob self status                   verify the standalone installation
+  wob self status                   fast installation health report (--deep to hash)
+  wob self repair                   fix launchers, bytecode, debris, corrupt config
+  wob self watch                    watch for breakage live
+  wob self incidents                read the recorded failure ledger
   wob --json project list           machine-readable output for scripts
 
 Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
@@ -160,8 +169,26 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     sp_deps.add_parser("list", help="List project dependencies")
 
     # 7. wob doctor
-    p_doctor = subparsers.add_parser("doctor", help="Run comprehensive environment health diagnostics")
-    p_doctor.add_argument("--quick", action="store_true", help="Skip slow tool version probes")
+    p_doctor = subparsers.add_parser(
+        "doctor", help="Run comprehensive, cached environment health diagnostics")
+    p_doctor.add_argument("--quick", action="store_true",
+                          help="Skip subprocess version probes (PATH lookups only)")
+    p_doctor.add_argument("--only", metavar="CATEGORIES",
+                          help="Limit to categories: system, resources, environment, "
+                               "tools, web, android, wobble (comma-separated)")
+    p_doctor.add_argument("--strict", action="store_true",
+                          help="Exit 1 when any check warns or fails (CI-friendly)")
+    p_doctor.add_argument("--fail-on", choices=["never", "warning", "missing", "error"],
+                          default="never", metavar="LEVEL",
+                          help="Exit 1 at or above this severity (never|warning|missing|error)")
+    p_doctor.add_argument("--timings", action="store_true",
+                          help="Show per-section timing and probe-cache statistics")
+    p_doctor.add_argument("--no-cache", action="store_true",
+                          help="Ignore and do not write the probe cache")
+    p_doctor.add_argument("--save-baseline", action="store_true",
+                          help="Store this run as the regression baseline")
+    p_doctor.add_argument("--no-save", action="store_true",
+                          help="Do not update the regression baseline")
 
     # 8. wob plugin
     p_plugin = subparsers.add_parser("plugin", help="List and inspect framework plugins")
@@ -185,11 +212,71 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     p_clean.add_argument("--all", action="store_true", help="Deep clean including node_modules and Gradle cache")
     p_clean.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt for destructive cleaning")
 
-    # 11. wob self (install/uninstall/verify the application itself)
-    p_self = subparsers.add_parser("self", help="Install, verify, or uninstall Wobble itself")
+    # 11. wob self (install/verify/repair the application itself)
+    p_self = subparsers.add_parser(
+        "self", help="Inspect, repair, verify, or uninstall Wobble itself")
     sp_self = p_self.add_subparsers(dest="subcommand")
-    sp_self.add_parser("status", help="Show how Wobble is installed")
-    sp_self.add_parser("verify", help="Verify installed files against the manifest")
+
+    for name, help_text in (
+        ("status", "Fast health report: runtime, launcher, PATH, config, history"),
+        ("health", "Alias for 'self status'"),
+    ):
+        p_self_status = sp_self.add_parser(name, help=help_text)
+        p_self_status.add_argument("--deep", action="store_true",
+                                   help="Hash every installed file and smoke-test imports")
+        p_self_status.add_argument("--strict", action="store_true",
+                                   help="Exit 1 on warnings as well as critical problems")
+        p_self_status.add_argument("--brief", action="store_true",
+                                   help="Print a single-line health summary")
+        _add_target_args(p_self_status)
+
+    p_self_verify = sp_self.add_parser(
+        "verify", help="Verify installed files against the manifest (parallel SHA-256)")
+    p_self_verify.add_argument("--serial", action="store_true",
+                               help="Hash sequentially (debugging)")
+    p_self_verify.add_argument("--strict", action="store_true",
+                               help="Also fail when the launcher is not executable")
+    _add_target_args(p_self_verify)
+
+    p_self_repair = sp_self.add_parser(
+        "repair", help="Fix launchers, bytecode, completions, debris, corrupt config")
+    p_self_repair.add_argument("--compile", dest="compile", action="store_true", default=True,
+                               help="Recompile missing bytecode (default)")
+    p_self_repair.add_argument("--no-compile", dest="compile", action="store_false",
+                               help="Skip bytecode compilation")
+    p_self_repair.add_argument("--completions", dest="completions", action="store_true",
+                               default=True, help="Regenerate shell completions (default)")
+    p_self_repair.add_argument("--no-completions", dest="completions", action="store_false",
+                               help="Skip shell completions")
+    p_self_repair.add_argument("--config", dest="fix_config", action="store_true",
+                               default=True, help="Back up corrupt config/registry (default)")
+    p_self_repair.add_argument("--no-config", dest="fix_config", action="store_false",
+                               help="Leave config/registry files alone")
+    p_self_repair.add_argument("--path", action="store_true",
+                               help="Add the launcher directory to shell startup files")
+    p_self_repair.add_argument("--accept-current", action="store_true",
+                               help="Re-baseline manifest hashes after a deliberate local patch")
+    p_self_repair.add_argument("-y", "--yes", action="store_true",
+                               help="Do not ask for confirmation with --accept-current")
+    _add_target_args(p_self_repair)
+
+    p_self_watch = sp_self.add_parser(
+        "watch", help="Continuously watch installation health and report changes")
+    p_self_watch.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
+                              help="Seconds between checks (default 2, minimum 0.2)")
+    p_self_watch.add_argument("--count", type=int, default=0, metavar="N",
+                              help="Stop after N checks (default: run until Ctrl+C)")
+    p_self_watch.add_argument("--deep", action="store_true",
+                              help="Hash files on every tick (slow)")
+    _add_target_args(p_self_watch)
+
+    p_self_incidents = sp_self.add_parser(
+        "incidents", help="Show or clear the recorded failure ledger")
+    p_self_incidents.add_argument("--limit", type=int, default=10, metavar="N",
+                                  help="Show at most N incidents (default 10)")
+    p_self_incidents.add_argument("--clear", action="store_true",
+                                  help="Delete the ledger after showing it")
+
     p_self_install = sp_self.add_parser("install", help="Install a standalone copy of Wobble")
     _add_install_args(p_self_install)
     p_self_uninstall = sp_self.add_parser("uninstall", help="Remove the Wobble installation")
@@ -1096,78 +1183,316 @@ def handle_about(args) -> int:
     return 0
 
 
-def handle_self(args) -> int:
+def _self_targets(args):
+    """Resolve --root/--bin overrides shared by every self subcommand."""
+    root = Path(args.root).expanduser() if getattr(args, "root", None) else None
+    bin_dir = Path(getattr(args, "bin", None)).expanduser() if getattr(args, "bin", None) else None
+    return root, bin_dir
+
+
+def _self_status(args) -> int:
+    from wobble.core import selfcheck, theme
+
+    logger = get_logger()
+    root, bin_dir = _self_targets(args)
+    report = selfcheck.inspect(
+        deep=bool(getattr(args, "deep", False)),
+        install_root=root,
+        bin_dir=bin_dir,
+    )
+    code = selfcheck.exit_code(report, strict=bool(getattr(args, "strict", False)))
+
+    if logger.json_mode:
+        report["exit_code"] = code
+        logger.json_output(report)
+        return code
+
+    if getattr(args, "brief", False):
+        counts = report["counts"]
+        overall = "ok" if report["ok"] else (
+            "error" if report["status"] == "broken" else "warning")
+        print(f"{theme.badge(overall, logger.use_color)} "
+              f"{report['status']}  {report['mode']} v{report['version']}  "
+              f"{counts['ok']} ok, {counts['warning']} warnings, {counts['critical']} critical"
+              f"  ({report['elapsed_ms']} ms)")
+        return code
+
+    print(selfcheck.render(report, use_color=logger.use_color))
+    if report["mode"] == "source-checkout":
+        print()
+        logger.hint("Running from a source checkout; install it with: wob self install")
+    elif report["mode"] == "legacy-symlink":
+        print()
+        logger.warn("Legacy symlink install: deleting the checkout would break 'wob'.")
+        logger.hint("Switch to a standalone install with: wob self install")
+    print()
+    return code
+
+
+def _self_verify(args) -> int:
     from wobble.core import installer, theme
 
     logger = get_logger()
-    sub = getattr(args, "subcommand", None) or "status"
-    root = Path(args.root).expanduser() if getattr(args, "root", None) else None
+    root, bin_dir = _self_targets(args)
+    data = installer.verify(root, parallel=not bool(getattr(args, "serial", False)))
+    launcher_path = Path(data.get("launcher") or (bin_dir or installer.default_bin_dir()) / "wob")
+    launcher_state = installer._launcher_state(launcher_path)
+    strict = bool(getattr(args, "strict", False))
+    if strict and data.get("ok") and not launcher_state.get("executable"):
+        data["ok"] = False
+        data["launcher_ok"] = False
+        data["hint"] = "Launcher is not executable: chmod 755 " + str(launcher_path)
 
-    if sub == "status":
-        data = installer.status(root)
-        if logger.json_mode:
-            logger.json_output(data)
-            return 0
-        healthy = data.get("healthy") if data.get("installed") else False
-        print(theme.rule("wobble installation", width=64, use_color=logger.use_color))
-        logger.status("ok" if data.get("installed") else "warning",
-                      "installed", "yes" if data.get("installed") else "no")
-        logger.status("ok" if data.get("standalone") else "warning",
-                      "standalone", "yes" if data.get("standalone") else "no")
-        if data.get("installed"):
-            logger.detail("Version", data.get("version"))
-            logger.detail("App dir", data.get("app_dir"))
-            logger.detail("Launcher", data.get("launcher") or "missing")
-            logger.detail("Files", f"{data.get('file_count', 0)} ({_human_bytes(data.get('total_bytes', 0))})")
-            logger.detail("Source needed", "no" if not data.get("source_exists") else "not at runtime")
-            logger.status("ok" if healthy else "error", "runtime", "intact" if healthy else "damaged")
-            if data.get("message"):
-                logger.hint(data["message"])
-        else:
-            logger.warn(data.get("message", "Wobble is not installed as standalone software."))
-            if data.get("legacy_target"):
-                logger.detail("Legacy target", data["legacy_target"])
-            logger.hint("Install it as software with: wob self install  (or: sh install.sh)")
-        print()
-        return 0
-
-    if sub == "verify":
-        data = installer.verify(root)
-        if logger.json_mode:
-            data["success"] = bool(data.get("ok"))
-            if not data["success"]:
-                if data.get("error"):
-                    data.setdefault("error_code", "installation_manifest_missing")
-                else:
-                    data["error"] = "Installed files failed integrity verification."
-                    data["error_code"] = "installation_verification_failed"
-            logger.json_output(data)
-            return 0 if data.get("ok") else 1
-        print(theme.rule("installation integrity", width=64, use_color=logger.use_color))
-        if data.get("error"):
-            logger.status("warning", "manifest", data["error"])
-            logger.hint("Install Wobble as software with: sh install.sh  (or: wob self install)")
-            print()
-            return 1
-        logger.status("ok" if data.get("ok") else "error", "manifest",
-                      f"{data.get('checked', 0)}/{data.get('file_count', 0)} files verified")
-        for rel in data.get("missing", [])[:6]:
-            logger.detail("missing", rel)
-        for rel in data.get("modified", [])[:6]:
-            logger.detail("modified", rel)
-        if not data.get("launcher_ok", True):
-            logger.warn("Launcher missing or replaced; run 'wob self install --force'.")
-        logger.hint("Source checkout is irrelevant here: verification reads only the installed app.")
-        print()
+    if logger.json_mode:
+        data["success"] = bool(data.get("ok"))
+        if not data["success"]:
+            if data.get("error"):
+                data.setdefault("error_code", "installation_manifest_missing")
+            else:
+                data["error"] = "Installed files failed integrity verification."
+                data["error_code"] = "installation_verification_failed"
+        data["launcher"] = str(launcher_path)
+        data["launcher_state"] = launcher_state
+        logger.json_output(data)
         return 0 if data.get("ok") else 1
 
+    print(theme.rule("installation integrity", width=66, use_color=logger.use_color))
+    if data.get("error"):
+        logger.status("warning", "manifest", data["error"])
+        logger.hint(data.get("hint") or "Install Wobble with: sh install.sh")
+        print()
+        return 1
+
+    logger.status("ok" if data.get("ok") else "error", "manifest",
+                  f"{data.get('checked', 0)}/{data.get('file_count', 0)} files verified "
+                  f"in {data.get('elapsed_ms', 0)} ms")
+    logger.detail("Hashed", _human_bytes(data.get("hashed_bytes", 0)))
+    logger.detail("Parallel", "yes" if data.get("parallel") else "no (small tree)")
+    for rel in data.get("missing", [])[:8]:
+        logger.detail("missing", rel)
+    for rel in data.get("modified", [])[:8]:
+        logger.detail("modified", rel)
+    for rel in data.get("unreadable", [])[:8]:
+        logger.detail("unreadable", rel)
+    if not data.get("launcher_ok", True):
+        logger.warn("Launcher missing, replaced, or not executable; run 'wob self repair'.")
+    if data.get("running_version") and data.get("version") != data.get("running_version"):
+        logger.warn(f"Manifest version v{data.get('version')} != running v{data.get('running_version')}")
+    if data.get("ok"):
+        logger.success("Every installed file matches the manifest.")
+    else:
+        logger.hint("Reinstall a verified runtime with: wob self install")
+        logger.hint("If you patched the install on purpose: wob self repair --accept-current")
+    print()
+    return 0 if data.get("ok") else 1
+
+
+def _self_repair(args) -> int:
+    from wobble.core import selfcheck, theme
+
+    logger = get_logger()
+    root, bin_dir = _self_targets(args)
+    accept_current = bool(getattr(args, "accept_current", False))
+    assume_yes = bool(getattr(args, "yes", False))
+
+    if accept_current and not assume_yes:
+        if logger.json_mode or not sys.stdin.isatty():
+            logger.error("--accept-current rewrites integrity hashes; re-run with --yes.")
+            return 1
+        logger.warn("--accept-current treats the current runtime files as trusted.")
+        try:
+            answer = input("Re-baseline manifest hashes? [y/N] ").strip().lower()
+        except EOFError:
+            answer = ""
+        if answer not in ("y", "yes"):
+            logger.info("Repair cancelled.")
+            return 0
+
+    data = selfcheck.repair(
+        install_root=root,
+        bin_dir=bin_dir,
+        compile_bytecode=bool(getattr(args, "compile", True)),
+        completions=bool(getattr(args, "completions", True)),
+        update_path=bool(getattr(args, "path", False)),
+        fix_config=bool(getattr(args, "fix_config", True)),
+        accept_current=accept_current,
+    )
+
+    if logger.json_mode:
+        logger.json_output(data)
+        return 0 if data.get("success") else 1
+
+    print(theme.rule("self repair", width=66, use_color=logger.use_color))
+    if data.get("error"):
+        logger.error(data["error"])
+        if data.get("fix"):
+            logger.hint(data["fix"])
+        print()
+        return 1
+    if not data.get("actions"):
+        logger.info("Nothing needed repair.")
+    for action in data.get("actions", []):
+        name = action.get("action")
+        if name == "rewrite_launchers":
+            logger.status("ok", "launchers", ", ".join(action.get("written", [])) or "none")
+        elif name == "compile_bytecode":
+            logger.status("ok", "bytecode", f"{action.get('pyc_files', 0)} .pyc files")
+        elif name == "cleanup_leftovers":
+            logger.status("ok", "debris", f"removed {len(action.get('removed', []))} path(s)")
+        elif name == "install_completions":
+            logger.status("ok", "completions", f"{len(action.get('written', []))} file(s)")
+        elif name.startswith("backup_corrupt_"):
+            logger.status("warning", name.replace("backup_corrupt_", "corrupt "),
+                          f"backed up to {action.get('backup')}")
+        elif name == "update_shell_path":
+            logger.status("ok", "PATH", ", ".join(action.get("touched", [])) or "already configured")
+        elif name == "refresh_manifest":
+            logger.status("ok", "manifest", f"re-baselined {action.get('file_count', 0)} files")
+        else:
+            logger.status("ok", name, "")
+    for failure in data.get("failed", []):
+        logger.error(f"{failure.get('action')}: {failure.get('error')}")
+    for problem in data.get("unresolved", []):
+        logger.warn(f"{problem['problem']} -> {problem['fix']}")
+    if data.get("success"):
+        logger.success("Installation repaired and verified.")
+    print()
+    return 0 if data.get("success") else 1
+
+
+def _self_watch(args) -> int:
+    import json
+    import time
+
+    from wobble.core import selfcheck
+
+    logger = get_logger()
+    root, bin_dir = _self_targets(args)
+    interval = max(0.2, float(getattr(args, "interval", 2.0) or 2.0))
+    remaining = int(getattr(args, "count", 0) or 0)
+    deep = bool(getattr(args, "deep", False))
+
+    if not logger.json_mode:
+        print(f"[wob] watching installation health every {interval:g}s "
+              f"({'deep' if deep else 'fast'}; Ctrl+C to stop)", flush=True)
+
+    previous = None
+    tick = 0
+    try:
+        while True:
+            tick += 1
+            report = selfcheck.inspect(deep=deep, install_root=root, bin_dir=bin_dir)
+            snapshot = {c["code"]: c["status"] for c in report["checks"]}
+            changes = []
+            if previous is not None:
+                rank = selfcheck.RANK
+                for code in sorted(set(previous) | set(snapshot)):
+                    before = previous.get(code)
+                    after = snapshot.get(code)
+                    if before == after:
+                        continue
+                    if before is None:
+                        kind = "new"
+                    elif after is None:
+                        kind = "gone"
+                    elif rank.get(after, 1) > rank.get(before, 1):
+                        kind = "worsened"
+                    else:
+                        kind = "recovered"
+                    changes.append({"change": kind, "code": code,
+                                    "from": before, "to": after})
+            stamp = time.strftime("%H:%M:%S")
+            if logger.json_mode:
+                print(json.dumps({
+                    "tick": tick,
+                    "time": stamp,
+                    "status": report["status"],
+                    "counts": report["counts"],
+                    "elapsed_ms": report["elapsed_ms"],
+                    "changes": changes,
+                    "issues": [{"code": i["code"], "status": i["status"],
+                                "detail": i["detail"], "fix": i.get("fix")}
+                               for i in report["issues"]],
+                }, default=str), flush=True)
+            elif changes:
+                for change in changes:
+                    before = change["from"] or "absent"
+                    after = change["to"] or "absent"
+                    print(f"[{stamp}] {change['change']:<9} {change['code']}: "
+                          f"{before} -> {after}", flush=True)
+                if any(change["change"] in ("new", "worsened") and change["to"] == "critical"
+                       for change in changes):
+                    print(f"[{stamp}] fix: wob self repair", flush=True)
+            else:
+                print(f"[{stamp}] {report['status']}  "
+                      f"{report['counts']['ok']} ok, {report['counts']['warning']} warnings, "
+                      f"{report['counts']['critical']} critical  ({report['elapsed_ms']} ms)",
+                      flush=True)
+            previous = snapshot
+            remaining -= 1
+            if remaining == 0:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        if not logger.json_mode:
+            print()
+            print("Stopped watching.")
+    return 0
+
+
+def _self_incidents(args) -> int:
+    from wobble.core import health, theme
+
+    logger = get_logger()
+    limit = max(1, int(getattr(args, "limit", 10) or 10))
+    summary = health.incident_summary(limit=limit)
+    incidents = health.read_incidents(limit=limit)
+
+    if logger.json_mode:
+        payload = dict(summary)
+        payload["incidents"] = incidents
+        payload["cleared"] = 0
+        if getattr(args, "clear", False):
+            payload["cleared"] = health.clear_incidents()
+        logger.json_output(payload)
+        return 0
+
+    print(theme.rule("failure ledger", width=66, use_color=logger.use_color))
+    if not incidents:
+        logger.status("ok", "incidents", "none recorded")
+    else:
+        for incident in incidents:
+            stamp = incident.get("last_seen_iso", "?")
+            count = incident.get("count", 1)
+            logger.status("warning" if incident.get("kind") != "crash" else "error",
+                          f"{incident.get('kind')} x{count}",
+                          f"{stamp}  {incident.get('message', '')[:120]}")
+    if getattr(args, "clear", False):
+        cleared = health.clear_incidents()
+        logger.status("ok", "cleared", f"{cleared} incident(s)")
+    elif incidents:
+        logger.hint("Clear with: wob self incidents --clear")
+    print()
+    return 0
+
+
+def handle_self(args) -> int:
+    sub = getattr(args, "subcommand", None) or "status"
+    if sub in ("status", "health"):
+        return _self_status(args)
+    if sub == "verify":
+        return _self_verify(args)
+    if sub == "repair":
+        return _self_repair(args)
+    if sub == "watch":
+        return _self_watch(args)
+    if sub == "incidents":
+        return _self_incidents(args)
     if sub == "install":
         return _do_install(args)
-
     if sub == "uninstall":
         return _do_uninstall(args)
-
-    logger.error(f"Unknown self subcommand: {sub}")
+    get_logger().error(f"Unknown self subcommand: {sub}")
     return 1
 
 
@@ -1288,7 +1613,8 @@ _GLOBAL_FLAGS = {"--json", "--no-color", "-v", "--verbose"}
 _OPTIONS_WITH_VALUES = {
     "-f", "--framework", "-p", "--package", "--port", "-d", "--dir",
     "--path", "--host", "--dest", "--keystore", "--alias", "--method",
-    "-m", "--manager", "--root", "--bin",
+    "-m", "--manager", "--root", "--bin", "--only", "--fail-on",
+    "--interval", "--count", "--limit",
 }
 
 
@@ -1341,6 +1667,8 @@ def _leading_global_flags(argv: List[str]) -> set:
 
 def _report_error(logger: Logger, error: WobbleError) -> None:
     """Render an expected error once, respecting the output contract."""
+    import json
+
     if logger.json_mode:
         if not logger._json_emitted:
             logger.json_output(error.to_dict())
@@ -1348,7 +1676,6 @@ def _report_error(logger: Logger, error: WobbleError) -> None:
             # A long-running command may already have emitted its startup
             # document. Preserve stdout as valid JSON but never lose a later
             # failure: send a compact diagnostic document to stderr.
-            import json
             print(json.dumps(error.to_dict(), default=str), file=sys.stderr)
         return
     usage = error.details.get("usage") if isinstance(error, UsageError) else None
@@ -1440,6 +1767,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         if verbose:
             import traceback
             traceback.print_exc()
+        try:
+            from wobble.core import health
+            health.record_incident(
+                "crash",
+                f"{type(exc).__name__}: {exc}",
+                {"command": " ".join(argv[:4]), "version": __version__},
+            )
+        except Exception:
+            pass
         if logger.json_mode:
             payload = unexpected_error_payload(exc, verbose=verbose)
             if not logger._json_emitted:
@@ -1461,8 +1797,22 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> int:
     # Top-level commands
     if cmd == "doctor":
         from wobble.core.doctor import run_doctor
-        run_doctor(json_mode=args.json, quick=getattr(args, "quick", False))
-        return 0
+        fail_on = "warning" if getattr(args, "strict", False) else getattr(args, "fail_on", "never")
+        try:
+            report = run_doctor(
+                json_mode=args.json,
+                quick=getattr(args, "quick", False),
+                only=getattr(args, "only", None),
+                fail_on=fail_on,
+                timings=getattr(args, "timings", False),
+                no_cache=getattr(args, "no_cache", False),
+                save_baseline=getattr(args, "save_baseline", False),
+                save=not getattr(args, "no_save", False),
+            )
+        except ValueError as exc:
+            logger.error(str(exc))
+            return 2
+        return int(report.get("exit_code", 0))
 
     elif cmd == "schema":
         from wobble.core.schema import get_cli_schema

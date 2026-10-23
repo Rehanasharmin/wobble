@@ -198,6 +198,10 @@ def badge(status: str, use_color: bool = True) -> str:
         "missing": ("[MISS]", RED),
         "error": ("[FAIL]", BRIGHT_RED),
         "fail": ("[FAIL]", BRIGHT_RED),
+        "critical": ("[FAIL]", BRIGHT_RED),
+        "broken": ("[FAIL]", BRIGHT_RED),
+        "degraded": ("[WARN]", YELLOW),
+        "healthy": ("[ OK ]", GREEN),
         "info": ("[INFO]", CYAN),
         "run": ("[RUN ]", MAGENTA),
         "skip": ("[SKIP]", DIM),
@@ -206,8 +210,13 @@ def badge(status: str, use_color: bool = True) -> str:
     return paint(label, code, BOLD, enabled=use_color)
 
 
-def progress_bar(percent: float, width: int = 22, use_color: bool = True) -> str:
-    """ASCII meter: ``[##########>-----------] 45%``."""
+def progress_bar(percent: float, width: int = 22, use_color: bool = True,
+                 invert: bool = False) -> str:
+    """ASCII meter: ``[##########>-----------] 45%``.
+
+    By default high values are "hot" (disk usage). Pass ``invert=True`` for
+    health scores, where 100% should be green rather than red.
+    """
     percent = max(0.0, min(100.0, float(percent)))
     filled = int(round((percent / 100.0) * width))
     if filled >= width:
@@ -216,7 +225,8 @@ def progress_bar(percent: float, width: int = 22, use_color: bool = True) -> str
         body = "-" * width
     else:
         body = "#" * (filled - 1) + ">" + "-" * (width - filled)
-    code = GREEN if percent < 70 else (YELLOW if percent < 90 else RED)
+    heat = 100.0 - percent if invert else percent
+    code = GREEN if heat < 70 else (YELLOW if heat < 90 else RED)
     return (paint("[", DIM, enabled=use_color) + paint(body, code, enabled=use_color)
             + paint("]", DIM, enabled=use_color) + f" {percent:3.0f}%")
 

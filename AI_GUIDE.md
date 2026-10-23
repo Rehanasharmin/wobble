@@ -87,10 +87,16 @@ If `wobble.json` is missing in an existing workspace, Wobble infers the project 
 
 | Task | Human Command | Agent / JSON Command | Notes |
 |------|---------------|----------------------|-------|
-| Check System Health | `wob doctor` | `wob doctor --json` | Returns status, storage, missing tools, and exact fixes |
-| Fast Health Check | `wob doctor --quick` | `wob doctor --json --quick` | Skips subprocess version probes (~2.5× faster) |
-| Check Installation | `wob self status` | `wob self status --json` | Reports standalone vs source-checkout mode and source independence |
-| Verify Installation | `wob self verify` | `wob self verify --json` | Re-hashes installed files; `ok=false` plus `missing`/`modified` on damage |
+| Check System Health | `wob doctor` | `wob doctor --json` | Cached probes, actionable fixes, and `regressions`/`recovered` since the last run |
+| Fast Health Check | `wob doctor --quick` | `wob doctor --json --quick` | Skips subprocess version probes (PATH lookups only) |
+| Filter Health Checks | `wob doctor --only android` | `wob doctor --json --only android,wobble` | Categories: `system`, `resources`, `environment`, `tools`, `web`, `android`, `wobble` |
+| Health For CI | `wob doctor --strict` | `wob doctor --json --fail-on missing` | Non-zero exit at or above the requested severity; JSON includes `exit_code` |
+| Check Installation | `wob self status` | `wob self status --json` | Structured checks with stable `code` values, health `score`, `issues`, and `next_steps` |
+| Deep Installation Check | `wob self status --deep` | `wob self status --deep --json` | Adds SHA-256 verification and an import smoke test of core modules |
+| Verify Installation | `wob self verify` | `wob self verify --json` | Hashes installed files; `ok=false` plus `missing`/`modified` on damage |
+| Repair Installation | `wob self repair` | `wob self repair --json` | Fixes launchers, bytecode, completions, install debris, corrupt config; refuses to fake integrity |
+| Watch For Breakage | `wob self watch --interval 2` | `wob --json self watch` | Prints only changes; JSON mode emits one document per line |
+| Read Failure Ledger | `wob self incidents` | `wob self incidents --json` | Recent crashes with counts, timestamps, and messages (`--clear` resets) |
 | List Projects | `wob project list` | `wob project list --json` | Lists registered and scanned projects |
 | Project Info | `wob project info` | `wob project info --json` | Returns file metrics and configuration |
 | Create Android Project | `wob create android <name>` | `wob create android <name> --package <pkg>` | Scaffolds build.gradle, Java, Layout, Manifest |
@@ -184,6 +190,12 @@ Always check the process exit status **and** the JSON body. A failed command nev
 - `--verbose` adds traceback/exception diagnostics for debugging; omit it for normal automation.
 - If a long-running command already printed a startup JSON document, a later failure document may be written to stderr so stdout remains valid JSON.
 
+`wob self status` exits `1` only when the installation is broken (`--strict` also
+fails on warnings). `wob doctor` exits per `--fail-on`/`--strict`, defaulting to
+`0` so it stays safe to call from hooks. Every finding in both commands carries a
+stable identifier (`runtime.files`, `launcher.present`, `regressions`,
+`history.incidents`, …) — assert on those instead of parsing prose.
+
 Common exit statuses: `0` success; `1` operational failure; `2` invalid arguments/config values; `124` timeout; `126` permission-to-execute failure; `127` missing executable; `130` user interrupt. Build/dependency commands may wrap an external failure as exit `1` while retaining the original `returncode` in JSON.
 
 | Error Condition | Likely Cause | Recommended Agent Recovery |
@@ -193,8 +205,11 @@ Common exit statuses: `0` success; `1` operational failure; `2` invalid argument
 | `Cannot execute binary file: Exec format error` | Architecture mismatch | Run `wob doctor --json` to verify machine architecture (`aarch64` vs `arm` vs `x86_64`). |
 | Storage permission denied | Android storage not linked | Advise user to run `termux-setup-storage` in their terminal. |
 | Port 3000 in use | Another dev server is running | Pass `--port 3001` or let Wobble auto-discover an open port. |
-| `wob: installation is damaged` | Installed app files were deleted or modified | Run `wob self verify --json`; reinstall with `sh install.sh` or `wob self install`. |
-| `wob self verify` reports `modified`/`missing` | Tampering, interrupted write, or partial copy | Reinstall with `sh install.sh`; do not rely on the damaged runtime. |
+| `wob: installation is damaged` | Installed app files were deleted or modified | Run `wob self status --json` (schedule `--deep` when you need hashes); reinstall with `sh install.sh` or `wob self install`. |
+| `wob self verify` reports `modified`/`missing` | Tampering, interrupted write, or partial copy | Reinstall with `sh install.sh`; do not rely on the damaged runtime. `wob self repair` fixes launchers/bytecode/debris but deliberately refuses to re-hash damaged runtime files. |
+| `wob self status` shows `launcher.present: critical` | Launcher deleted, stale, or pointing at an old app directory | Run `wob self repair` (rewrites only launchers carrying Wobble's marker). |
+| `wob self status` shows `installer.leftovers` | An install was interrupted | Run `wob self repair` to remove `.app.tmp-*` / `.app.old`. |
+| `wob doctor` reports a regression | A tool disappeared or changed since the last run | Compare the listed check with `previous_run`; re-install the missing package or fix `PATH`. |
 | `invalid_project_spec` | `wobble.json` is malformed or has invalid field types | Fix the path in `details.path`; do not run scaffolding over the existing project. |
 | `config_write_failed` / `registry_write_failed` | Read-only state, full disk, or insufficient permissions | Check the reported path, free space, and permissions. Retry only after the write can succeed. |
 | `invalid_config_value` | Port outside `1..65535` or an unrecognized boolean | Re-run `wob config set` with a valid value; the previous in-memory and on-disk values were preserved. |
@@ -250,5 +265,7 @@ class CustomPlugin(BasePlugin):
 - Always use `pkg` or official Termux package repositories.
 - Keep secrets, tokens, and keystore passwords out of command line arguments and Git commits. `wob apk sign` reads `WOBBLE_KS_PASS` through apksigner's `env:` protocol, so never pass a password as a flag or echo it into logs.
 - Do not bind previews or dev servers to `0.0.0.0`/`--lan` on public networks, and never disable the preview server's dotfile/secret blocking.
-- Treat `wob self verify` as the source of truth for installation health; reinstall rather than patching files inside `~/.local/share/wobble/app` by hand.
+- Treat `wob self status --deep` (or `wob self verify`) as the source of truth for installation health; reinstall rather than patching files inside `~/.local/share/wobble/app` by hand. If a patch is intentional, use `wob self repair --accept-current --yes` so the manifest records it.
+- Never silence a `critical` finding. `wob self repair` fixes mechanical damage (launchers, bytecode, debris, corrupt config); missing or modified runtime files require a reinstall.
+- Read the incident ledger (`wob self incidents --json`) before debugging intermittent failures; crashes are recorded automatically with the command that triggered them.
 - Run `wob --json` commands for machine consumption; the human output is ASCII-styled and intended for terminals.

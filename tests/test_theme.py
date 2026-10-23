@@ -44,5 +44,21 @@ class TestLayout(unittest.TestCase):
         self.assertIn("1.2.0", row)
 
 
+class TestHealthMeter(unittest.TestCase):
+    def test_invert_makes_high_scores_green(self):
+        from wobble.core import theme
+
+        healthy = theme.progress_bar(100, use_color=True, invert=True)
+        unhealthy = theme.progress_bar(10, use_color=True, invert=True)
+        self.assertIn(theme.GREEN, healthy)
+        self.assertIn(theme.RED, unhealthy)
+
+    def test_default_meter_still_treats_high_as_hot(self):
+        from wobble.core import theme
+
+        self.assertIn(theme.RED, theme.progress_bar(99, use_color=True))
+        self.assertIn(theme.GREEN, theme.progress_bar(10, use_color=True))
+
+
 if __name__ == "__main__":
     unittest.main()
