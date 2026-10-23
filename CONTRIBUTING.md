@@ -24,7 +24,7 @@ wobble/
 │   ├── web/              # Web dev servers, framework detection, hardened preview
 │   ├── deps/             # Unified package manager routing
 │   └── plugins/          # Plugin loader, BasePlugin, built-in framework plugins
-├── tests/                # Automated unit test suite (161 tests, standard library only)
+├── tests/                # Automated unit test suite (234 tests, standard library only)
 ├── docs/                 # In-depth architectural & workflow guides
 ├── install.sh            # Standalone installer (copy + manifest + launcher)
 └── uninstall.sh          # Standalone uninstaller (projects preserved)
@@ -63,7 +63,7 @@ All tests must pass before submitting a pull request. Security-sensitive changes
 (input validation, preview routing, installer file handling, plugin loading,
 subprocess execution) need a regression test in `tests/test_hardening.py`,
 `tests/test_error_handling.py`, `tests/test_preview_security.py`,
-`tests/test_installer.py`, or `tests/test_plugins.py`.
+`tests/test_installer.py`, `tests/test_selfcheck.py`, or `tests/test_plugins.py`.
 
 Verify the standalone installer as well:
 

@@ -8,7 +8,6 @@ uses the exception's exit code.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
 
 
 EXIT_FAILURE = 1

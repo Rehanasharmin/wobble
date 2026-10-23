@@ -294,10 +294,27 @@ def get_cli_schema() -> Dict[str, Any]:
                 }
             },
             "doctor": {
-                "description": "Comprehensive environment health check (Android, Termux, storage, memory, SDK, JDK, tools, PATH)",
+                "description": "Cached environment health check with regression detection: Android, Termux, storage, memory, SDK, JDK, tools, PATH, and the Wobble installation itself",
                 "flags": [
                     {"name": "--json", "type": "boolean", "description": "Return health check as JSON object"},
-                    {"name": "--quick", "type": "boolean", "default": False, "description": "Skip slow tool version probes (much faster)"}
+                    {"name": "--quick", "type": "boolean", "default": False, "description": "Skip subprocess version probes (PATH lookups only)"},
+                    {"name": "--only", "type": "string", "description": "Comma-separated categories: system, resources, environment, tools, web, android, wobble"},
+                    {"name": "--strict", "type": "boolean", "default": False, "description": "Exit 1 when any check warns or fails (CI-friendly)"},
+                    {"name": "--fail-on", "type": "string", "default": "never", "choices": ["never", "warning", "missing", "error"], "description": "Exit 1 at or above this severity"},
+                    {"name": "--timings", "type": "boolean", "default": False, "description": "Show per-section timing and probe-cache statistics"},
+                    {"name": "--no-cache", "type": "boolean", "default": False, "description": "Ignore and do not write the probe cache"},
+                    {"name": "--save-baseline", "type": "boolean", "default": False, "description": "Store this run as the regression baseline"},
+                    {"name": "--no-save", "type": "boolean", "default": False, "description": "Do not update the regression baseline"}
+                ],
+                "result_fields": [
+                    "status", "counts", "checks", "regressions", "recovered", "persistent",
+                    "timings", "cache", "exit_code"
+                ],
+                "examples": [
+                    "wob doctor",
+                    "wob doctor --json --quick",
+                    "wob doctor --only android --timings",
+                    "wob doctor --fail-on warning"
                 ]
             },
             "plugin": {
@@ -349,10 +366,58 @@ def get_cli_schema() -> Dict[str, Any]:
                 ]
             },
             "self": {
-                "description": "Manage the standalone Wobble installation itself",
+                "description": "Inspect, repair, verify, and manage the standalone Wobble installation itself",
                 "subcommands": {
-                    "status": {"description": "Show whether Wobble runs standalone or from a source checkout"},
-                    "verify": {"description": "Verify installed files against the install manifest hashes"},
+                    "status": {
+                        "description": "Fast, comprehensive health report: runtime files, bytecode, launcher, PATH, completions, config, disk, and recorded incidents",
+                        "flags": [
+                            {"name": "--deep", "type": "boolean", "default": False, "description": "Hash every installed file and smoke-test imports"},
+                            {"name": "--strict", "type": "boolean", "default": False, "description": "Exit 1 on warnings as well as critical problems"},
+                            {"name": "--brief", "type": "boolean", "default": False, "description": "Print a single-line health summary"},
+                            {"name": "--root", "type": "string", "description": "Installation root to inspect"},
+                            {"name": "--bin", "type": "string", "description": "Launcher directory to inspect"}
+                        ],
+                        "exit_codes": {"0": "healthy or degraded (unless --strict)", "1": "broken installation"},
+                        "result_fields": [
+                            "status", "score", "counts", "checks", "issues", "next_steps",
+                            "incidents", "timings", "elapsed_ms"
+                        ]
+                    },
+                    "health": {"description": "Alias for self status"},
+                    "verify": {
+                        "description": "Verify installed files against the manifest with parallel SHA-256 hashing",
+                        "flags": [
+                            {"name": "--serial", "type": "boolean", "default": False, "description": "Hash sequentially (debugging)"},
+                            {"name": "--strict", "type": "boolean", "default": False, "description": "Also fail when the launcher is not executable"}
+                        ]
+                    },
+                    "repair": {
+                        "description": "Fix launchers, bytecode, completions, interrupted-install debris, and corrupt config without weakening integrity",
+                        "flags": [
+                            {"name": "--no-compile", "type": "boolean", "default": False, "description": "Skip bytecode compilation"},
+                            {"name": "--no-completions", "type": "boolean", "default": False, "description": "Skip shell completions"},
+                            {"name": "--no-config", "type": "boolean", "default": False, "description": "Leave config/registry files alone"},
+                            {"name": "--path", "type": "boolean", "default": False, "description": "Add the launcher directory to shell startup files"},
+                            {"name": "--accept-current", "type": "boolean", "default": False, "description": "Re-baseline manifest hashes after a deliberate local patch (requires --yes when non-interactive)"},
+                            {"name": "--yes", "type": "boolean", "default": False, "description": "Skip confirmation for --accept-current"}
+                        ]
+                    },
+                    "watch": {
+                        "description": "Continuously re-check installation health and print only changes",
+                        "flags": [
+                            {"name": "--interval", "type": "number", "default": 2.0, "description": "Seconds between checks (minimum 0.2)"},
+                            {"name": "--count", "type": "integer", "default": 0, "description": "Stop after N checks (0 = until Ctrl+C)"},
+                            {"name": "--deep", "type": "boolean", "default": False, "description": "Hash files on every tick"}
+                        ],
+                        "note": "With --json, emits one JSON document per line (NDJSON)"
+                    },
+                    "incidents": {
+                        "description": "Show or clear the failure ledger recorded by crashes and failed repairs",
+                        "flags": [
+                            {"name": "--limit", "type": "integer", "default": 10},
+                            {"name": "--clear", "type": "boolean", "default": False}
+                        ]
+                    },
                     "install": {
                         "description": "Install a standalone, source-independent copy of Wobble",
                         "flags": [
@@ -457,6 +522,27 @@ def get_cli_schema() -> Dict[str, Any]:
             "lan_ip_detection": True,
             "standalone_install": True,
             "source_independent_runtime": True,
+            "self_health_checks": {
+                "fast_metadata_scan": True,
+                "deep_hash_verification": True,
+                "import_smoke_test": True,
+                "stable_check_codes": True,
+                "exit_code_on_breakage": True,
+                "auto_repair": ["launchers", "bytecode", "completions", "install_debris",
+                                "corrupt_config", "shell_path"]
+            },
+            "regression_detection": {
+                "doctor_snapshots": True,
+                "regressions": True,
+                "recoveries": True,
+                "persistent_failures": True
+            },
+            "incident_ledger": True,
+            "probe_cache": {
+                "persisted": True,
+                "self_invalidating": True,
+                "default_ttl_seconds": 3600
+            },
             "preview_security": {
                 "localhost_default": True,
                 "dotfiles_blocked": True,

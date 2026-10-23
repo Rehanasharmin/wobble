@@ -8,9 +8,9 @@ full CLI parse would take — which matters on phones where every millisecond of
 startup is visible.
 """
 
-import json
+from __future__ import annotations
+
 import sys
-from typing import List, Optional
 
 from wobble import __version__
 
@@ -29,19 +29,21 @@ def print_landing() -> None:
     print()
     print(theme.rule("quick start", width=64, use_color=use_color))
     rows = [
-        ("wob doctor", "audit your Termux environment"),
+        ("wob doctor", "audit Termux + detect regressions"),
+        ("wob self status", "fast installation health report"),
         ("wob create web demo", "scaffold a web project"),
         ("wob create android app", "scaffold a native Android app"),
         ("wob dev", "start the dev server for this project"),
         ("wob preview --lan", "preview locally or on your Wi-Fi"),
-        ("wob self status", "check how Wobble is installed"),
+        ("wob self watch", "watch for breakage live"),
         ("wob --help", "list every command and flag"),
     ]
     for command, description in rows:
         cmd = theme.paint(command, theme.BRIGHT_CYAN, theme.BOLD, enabled=use_color)
         print(f"  {cmd:<34} {theme.paint(description, theme.DIM, enabled=use_color)}")
     print()
-    print(theme.paint("Tip: 'wob --json <command>' gives machine-readable output.",
+    print(theme.paint("Tip: 'wob --json <command>' gives machine-readable output; "
+                      "'wob doctor --timings' shows where time goes.",
                       theme.DIM, enabled=use_color))
     print()
 
@@ -59,6 +61,8 @@ def maybe_handle_fast_path(argv: List[str]) -> Optional[int]:
     if (len(argv) <= 2 and all(a in ("--version", "-V", "version", "--json") for a in argv)
             and any(a in ("--version", "-V", "version") for a in argv)):
         if "--json" in argv:
+            import json
+
             print(json.dumps({
                 "name": "wobble",
                 "command": "wob",
@@ -87,6 +91,8 @@ def run(argv: Optional[List[str]] = None) -> int:
         return 0
     except KeyboardInterrupt:
         if "--json" in args:
+            import json
+
             print(json.dumps({
                 "success": False,
                 "error": "Interrupted by user.",
@@ -99,12 +105,23 @@ def run(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:
         # Fast paths deliberately bypass cli.main(); give them the same concise
         # last-resort diagnostics instead of leaking a traceback.
+        try:
+            from wobble.core import health
+            health.record_incident(
+                "crash",
+                f"{type(exc).__name__}: {exc}",
+                {"command": " ".join(args[:4]), "version": __version__},
+            )
+        except Exception:
+            pass
         from wobble.core.errors import unexpected_error_payload
         verbose = "--verbose" in args or "-v" in args
         if verbose:
             import traceback
             traceback.print_exc()
         if "--json" in args:
+            import json
+
             print(json.dumps(unexpected_error_payload(exc, verbose=verbose), indent=2))
         else:
             print(f"[x] Unexpected error: {exc}", file=sys.stderr)

@@ -3,6 +3,6 @@ Wobble - Production-Ready Termux Development Harness
 "Termux -> Wobble -> Projects -> Frameworks -> Build -> Test -> APK/Web app"
 """
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 __author__ = "Wobble Open Source Contributors"
 __license__ = "Apache-2.0"

@@ -9,7 +9,6 @@ resolved once at construction time, which keeps startup fast on mobile CPUs.
 from __future__ import annotations
 
 import sys
-import json
 
 from wobble.core import theme
 
@@ -98,6 +97,8 @@ class Logger:
 
     def json_output(self, data: Any):
         """Serialize one JSON document and normalize legacy failure results."""
+        import json
+
         if isinstance(data, dict):
             data = dict(data)
             if data.get("success") is False and data.get("error") and "error_code" not in data:

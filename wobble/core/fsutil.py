@@ -7,9 +7,7 @@ process killers).
 
 from __future__ import annotations
 
-import json
 import os
-import tempfile
 from pathlib import Path
 
 
@@ -19,6 +17,8 @@ def atomic_write_text(target: Union[str, Path], content: str, encoding: str = "u
     directory first, then is renamed over the destination. A crash mid-write can
     therefore never leave a half-written target file.
     """
+    import tempfile
+
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -43,6 +43,8 @@ def atomic_write_text(target: Union[str, Path], content: str, encoding: str = "u
 
 def atomic_write_json(target: Union[str, Path], data: Any, indent: int = 2) -> None:
     """Serialize data as JSON and write it to target atomically."""
+    import json
+
     atomic_write_text(target, json.dumps(data, indent=indent, default=str) + "\n")
 
 
