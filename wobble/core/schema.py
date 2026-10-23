@@ -59,6 +59,7 @@ def get_cli_schema() -> Dict[str, Any]:
                 "2": "Invalid command-line arguments or invalid configuration value",
                 "124": "External command timed out (when propagated by the command)",
                 "126": "Executable exists but cannot be executed (when propagated)",
+                "121": "The installed Wobble runtime could not be loaded (launcher auto-recovers once)",
                 "127": "Required executable was not found (when propagated)",
                 "130": "Interrupted by Ctrl+C"
             },
@@ -392,15 +393,35 @@ def get_cli_schema() -> Dict[str, Any]:
                         ]
                     },
                     "repair": {
-                        "description": "Fix launchers, bytecode, completions, interrupted-install debris, and corrupt config without weakening integrity",
+                        "description": "Heal the installation: restore missing or corrupted runtime files from the verified offline snapshot (or the source checkout), rebuild a corrupt manifest, then fix launchers, bytecode, completions, debris, and config",
+                        "restores_runtime_files": True,
                         "flags": [
+                            {"name": "--restore / --no-restore", "type": "boolean", "default": True, "description": "Restore damaged runtime files (default) or limit repair to metadata fixes"},
+                            {"name": "--from", "type": "string", "default": "auto", "choices": ["auto", "snapshot", "source", "network"], "description": "Preferred recovery source"},
+                            {"name": "--network", "type": "boolean", "default": False, "description": "Allow downloading a release archive when nothing local works"},
+                            {"name": "--url", "type": "string", "description": "Release archive URL for --from network"},
+                            {"name": "--emergency", "type": "boolean", "default": False, "description": "Full recovery: restore from any available source, allow downloads, accept a version change"},
+                            {"name": "--dry-run", "type": "boolean", "default": False, "description": "Show what would be restored without changing anything"},
+                            {"name": "--snapshot", "type": "boolean", "default": False, "description": "Rewrite the offline recovery snapshot from the current runtime"},
+                            {"name": "--no-backup", "type": "boolean", "default": False, "description": "Do not keep copies of the damaged files under repair-backups/"},
                             {"name": "--no-compile", "type": "boolean", "default": False, "description": "Skip bytecode compilation"},
                             {"name": "--no-completions", "type": "boolean", "default": False, "description": "Skip shell completions"},
                             {"name": "--no-config", "type": "boolean", "default": False, "description": "Leave config/registry files alone"},
                             {"name": "--path", "type": "boolean", "default": False, "description": "Add the launcher directory to shell startup files"},
                             {"name": "--accept-current", "type": "boolean", "default": False, "description": "Re-baseline manifest hashes after a deliberate local patch (requires --yes when non-interactive)"},
                             {"name": "--yes", "type": "boolean", "default": False, "description": "Skip confirmation for --accept-current"}
-                        ]
+                        ],
+                        "result_fields": ["success", "repaired", "actions", "failed", "warnings", "unresolved", "verification", "restore", "snapshot", "elapsed_ms"]
+                    },
+                    "rescue": {
+                        "description": "Emergency recovery (alias of `wob rescue`): rebuild the runtime from the offline snapshot, the source checkout, or a release archive even when `wob` cannot start",
+                        "flags": [
+                            {"name": "--dry-run", "type": "boolean", "default": False, "description": "Show the recovery plan without changing anything"},
+                            {"name": "--from", "type": "string", "default": "auto", "choices": ["auto", "snapshot", "source", "network"]},
+                            {"name": "--url", "type": "string"},
+                            {"name": "--no-backup", "type": "boolean", "default": False}
+                        ],
+                        "out_of_band": ["<root>/rescue.sh", "<root>/rescue.py", "wob-rescue"]
                     },
                     "watch": {
                         "description": "Continuously re-check installation health and print only changes",
@@ -425,7 +446,8 @@ def get_cli_schema() -> Dict[str, Any]:
                             {"name": "--bin", "type": "string", "description": "Launcher directory (default: ~/.local/bin)"},
                             {"name": "--force", "type": "boolean", "default": False, "description": "Replace an existing foreign wob executable"},
                             {"name": "--no-completion", "type": "boolean", "default": False, "description": "Do not install shell completions"},
-                            {"name": "--no-path", "type": "boolean", "default": False, "description": "Do not edit shell startup files"}
+                            {"name": "--no-path", "type": "boolean", "default": False, "description": "Do not edit shell startup files"},
+                            {"name": "--no-snapshot", "type": "boolean", "default": False, "description": "Skip the offline recovery snapshot (loses offline repair)"}
                         ]
                     },
                     "uninstall": {
@@ -445,7 +467,19 @@ def get_cli_schema() -> Dict[str, Any]:
                     {"name": "--bin", "type": "string", "description": "Launcher directory"},
                     {"name": "--force", "type": "boolean", "default": False},
                     {"name": "--no-completion", "type": "boolean", "default": False},
-                    {"name": "--no-path", "type": "boolean", "default": False}
+                    {"name": "--no-path", "type": "boolean", "default": False},
+                    {"name": "--no-snapshot", "type": "boolean", "default": False}
+                ]
+            },
+            "rescue": {
+                "description": "Alias for `wob self rescue`: emergency recovery of a damaged installation",
+                "flags": [
+                    {"name": "--dry-run", "type": "boolean", "default": False},
+                    {"name": "--from", "type": "string", "default": "auto"},
+                    {"name": "--url", "type": "string"},
+                    {"name": "--no-backup", "type": "boolean", "default": False},
+                    {"name": "--root", "type": "string"},
+                    {"name": "--bin", "type": "string"}
                 ]
             },
             "uninstall": {
@@ -528,8 +562,14 @@ def get_cli_schema() -> Dict[str, Any]:
                 "import_smoke_test": True,
                 "stable_check_codes": True,
                 "exit_code_on_breakage": True,
-                "auto_repair": ["launchers", "bytecode", "completions", "install_debris",
-                                "corrupt_config", "shell_path"]
+                "auto_repair": ["runtime_files_from_verified_snapshot", "launchers",
+                                "bytecode", "completions", "install_debris",
+                                "corrupt_config", "shell_path", "manifest_rebuild"],
+                "offline_recovery_snapshot": True,
+                "recovery_sources": ["snapshot", "source_checkout", "release_archive"],
+                "out_of_band_rescue": ["rescue.py", "rescue.sh", "wob-rescue"],
+                "keeps_damaged_files": "repair-backups/",
+                "launcher_auto_recovery": True
             },
             "regression_detection": {
                 "doctor_snapshots": True,
@@ -555,7 +595,10 @@ def get_cli_schema() -> Dict[str, Any]:
                 "manifest": "install.json",
                 "default_root": "~/.local/share/wobble",
                 "default_launcher": "~/.local/bin/wob",
-                "precompiled_bytecode": True
+                "precompiled_bytecode": True,
+                "recovery_snapshot": "snapshot/",
+                "rescue_scripts": ["rescue.py", "rescue.sh"],
+                "repair_backups": "repair-backups/"
             }
         },
         "environment": get_full_environment_report()

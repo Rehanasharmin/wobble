@@ -83,7 +83,24 @@ def run(argv: Optional[List[str]] = None) -> int:
         if fast is not None:
             return fast
 
-        from wobble.cli import main
+        try:
+            from wobble.cli import main
+        except (ImportError, SyntaxError) as exc:
+            # A damaged runtime, not a command failure: use exit code 121 so the
+            # generated launcher can restore the snapshot and retry exactly once.
+            try:
+                from wobble.core import health
+                health.record_incident(
+                    "runtime",
+                    f"cannot load the runtime: {type(exc).__name__}: {exc}",
+                    {"version": __version__},
+                )
+            except Exception:
+                pass
+            print(f"wob: the installed runtime is damaged: {exc}", file=sys.stderr)
+            print("wob: run 'wob self repair' (or: wob-rescue) to restore it",
+                  file=sys.stderr)
+            return 121
         return main(args)
     except BrokenPipeError:
         # Do not close sys.stdout here: Wobble is also embedded by test runners

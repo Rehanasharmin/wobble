@@ -12,7 +12,7 @@ _wob_completions() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="create project android web apk deps doctor plugin config clean self install uninstall banner about version help update schema completion build dev preview"
+    cmds="create project android web apk deps doctor plugin config clean self install uninstall rescue banner about version help update schema completion build dev preview"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=( $(compgen -W "$cmds" -- "$cur") )
@@ -28,9 +28,10 @@ _wob_completions() {
         deps)     subcmds="install add remove doctor list" ;;
         plugin)   subcmds="list info" ;;
         config)   subcmds="list get set" ;;
-        self)     subcmds="status verify install uninstall" ;;
+        self)     subcmds="status verify repair rescue watch incidents install uninstall" ;;
         install)  subcmds="" ;;
         uninstall) subcmds="" ;;
+        rescue)    subcmds="" ;;
         completion) subcmds="bash zsh" ;;
         *)        subcmds="" ;;
     esac

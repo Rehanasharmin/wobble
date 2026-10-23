@@ -68,7 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
   wob apk build && wob apk install  build and install a debug APK
   wob web preview --lan             preview on localhost and your Wi-Fi
   wob self status                   fast installation health report (--deep to hash)
-  wob self repair                   fix launchers, bytecode, debris, corrupt config
+  wob self repair                   heal the runtime from its verified snapshot
+  wob self rescue                   emergency recovery (works when wob won't start)
   wob self watch                    watch for breakage live
   wob self incidents                read the recorded failure ledger
   wob --json project list           machine-readable output for scripts
@@ -239,7 +240,8 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     _add_target_args(p_self_verify)
 
     p_self_repair = sp_self.add_parser(
-        "repair", help="Fix launchers, bytecode, completions, debris, corrupt config")
+        "repair",
+        help="Restore damaged runtime files, then fix launchers, bytecode, config")
     p_self_repair.add_argument("--compile", dest="compile", action="store_true", default=True,
                                help="Recompile missing bytecode (default)")
     p_self_repair.add_argument("--no-compile", dest="compile", action="store_false",
@@ -258,7 +260,15 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
                                help="Re-baseline manifest hashes after a deliberate local patch")
     p_self_repair.add_argument("-y", "--yes", action="store_true",
                                help="Do not ask for confirmation with --accept-current")
+    _add_repair_recovery_args(p_self_repair)
     _add_target_args(p_self_repair)
+
+    p_self_rescue = sp_self.add_parser(
+        "rescue", help="Emergency recovery: rebuild the runtime from its snapshot")
+    p_self_rescue.add_argument("--dry-run", action="store_true",
+                               help="Show the recovery plan without changing anything")
+    _add_repair_recovery_args(p_self_rescue, simple=True)
+    _add_target_args(p_self_rescue)
 
     p_self_watch = sp_self.add_parser(
         "watch", help="Continuously watch installation health and report changes")
@@ -287,6 +297,12 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     _add_install_args(p_install)
     p_uninstall = subparsers.add_parser("uninstall", help="Remove Wobble from this system")
     _add_uninstall_args(p_uninstall)
+    p_rescue = subparsers.add_parser(
+        "rescue", help="Emergency recovery for a damaged Wobble installation")
+    p_rescue.add_argument("--dry-run", action="store_true",
+                          help="Show the recovery plan without changing anything")
+    _add_repair_recovery_args(p_rescue, simple=True)
+    _add_target_args(p_rescue)
 
     # 11b. wob update / version / help
     subparsers.add_parser("update", help="Check for Wobble updates")
@@ -321,12 +337,37 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     return parser
 
 
+def _add_repair_recovery_args(parser: argparse.ArgumentParser, simple: bool = False) -> None:
+    """Flags controlling how ``repair``/``rescue`` restore the runtime."""
+    if not simple:
+        parser.add_argument("--restore", dest="restore", action="store_true", default=True,
+                            help="Restore missing or corrupted runtime files (default)")
+        parser.add_argument("--no-restore", dest="restore", action="store_false",
+                            help="Only fix launchers/bytecode/config; never rewrite runtime files")
+        parser.add_argument("--dry-run", action="store_true",
+                            help="Show the recovery plan without changing anything")
+    parser.add_argument("--from", dest="recovery_source", default="auto",
+                        choices=["auto", "snapshot", "source", "network"],
+                        help="Recovery source to prefer (default: auto)")
+    parser.add_argument("--url", help="Release archive URL for --from network")
+    parser.add_argument("--network", action="store_true",
+                        help="Allow downloading a release archive when nothing local works")
+    parser.add_argument("--emergency", action="store_true",
+                        help="Full recovery: allow downloads and accept a version change")
+    parser.add_argument("--snapshot", action="store_true",
+                        help="Rewrite the offline recovery snapshot from the current runtime")
+    parser.add_argument("--no-backup", action="store_true",
+                        help="Do not keep copies of the damaged files")
+
+
 def _add_install_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root", help="Install directory (default: ~/.local/share/wobble)")
     parser.add_argument("--bin", help="Directory for the 'wob' launcher (default: ~/.local/bin)")
     parser.add_argument("--force", action="store_true", help="Replace an existing foreign 'wob' executable")
     parser.add_argument("--no-completion", action="store_true", help="Do not install shell completions")
     parser.add_argument("--no-path", action="store_true", help="Do not edit ~/.bashrc / ~/.zshrc")
+    parser.add_argument("--no-snapshot", action="store_true",
+                        help="Skip the offline recovery snapshot (saves disk, loses offline repair)")
 
 
 def _add_uninstall_args(parser: argparse.ArgumentParser) -> None:
@@ -1281,21 +1322,24 @@ def _self_verify(args) -> int:
     if data.get("ok"):
         logger.success("Every installed file matches the manifest.")
     else:
-        logger.hint("Reinstall a verified runtime with: wob self install")
+        logger.hint("Restore the damaged files from the verified snapshot: wob self repair")
+        logger.hint("If no snapshot/source is available: wob self repair --emergency")
         logger.hint("If you patched the install on purpose: wob self repair --accept-current")
     print()
     return 0 if data.get("ok") else 1
 
 
-def _self_repair(args) -> int:
+def _self_repair(args, emergency: bool = False, title: str = "self repair") -> int:
     from wobble.core import selfcheck, theme
 
     logger = get_logger()
     root, bin_dir = _self_targets(args)
     accept_current = bool(getattr(args, "accept_current", False))
     assume_yes = bool(getattr(args, "yes", False))
+    is_emergency = bool(emergency or getattr(args, "emergency", False))
+    dry_run = bool(getattr(args, "dry_run", False))
 
-    if accept_current and not assume_yes:
+    if accept_current and not assume_yes and not dry_run:
         if logger.json_mode or not sys.stdin.isatty():
             logger.error("--accept-current rewrites integrity hashes; re-run with --yes.")
             return 1
@@ -1316,24 +1360,79 @@ def _self_repair(args) -> int:
         update_path=bool(getattr(args, "path", False)),
         fix_config=bool(getattr(args, "fix_config", True)),
         accept_current=accept_current,
+        restore=bool(getattr(args, "restore", True)),
+        source=getattr(args, "recovery_source", "auto") or "auto",
+        network=bool(getattr(args, "network", False)),
+        url=getattr(args, "url", None),
+        dry_run=dry_run,
+        emergency=is_emergency,
+        refresh_snapshot=bool(getattr(args, "snapshot", False)),
+        backup=not bool(getattr(args, "no_backup", False)),
     )
 
     if logger.json_mode:
         logger.json_output(data)
         return 0 if data.get("success") else 1
 
-    print(theme.rule("self repair", width=66, use_color=logger.use_color))
-    if data.get("error"):
+    print(theme.rule(title, width=66, use_color=logger.use_color))
+    if data.get("error") and not data.get("actions"):
         logger.error(data["error"])
-        if data.get("fix"):
-            logger.hint(data["fix"])
+        if data.get("fix") or data.get("hint"):
+            logger.hint(data.get("fix") or data.get("hint"))
         print()
         return 1
+
+    restore_info = data.get("restore") or {}
+    if dry_run:
+        plan = data.get("plan") or {}
+        logger.status("info", "dry run", "no files were changed")
+        if plan.get("restore"):
+            logger.status("warning", "would restore", f"{len(plan['restore'])} file(s)")
+            for rel in plan["restore"][:10]:
+                logger.detail("file", rel)
+        elif restore_info.get("mode") == "full":
+            logger.status("warning", "would reinstall",
+                          f"from {(plan.get('reinstall_from') or {}).get('kind', 'source')}")
+        else:
+            logger.status("ok", "runtime", "nothing to restore")
+        source = (plan.get("source") or restore_info.get("source") or {})
+        if source:
+            logger.detail("source", f"{source.get('kind')} ({source.get('path')})")
+        print()
+        return 0 if data.get("success") else 1
+
     if not data.get("actions"):
         logger.info("Nothing needed repair.")
     for action in data.get("actions", []):
         name = action.get("action")
-        if name == "rewrite_launchers":
+        if name == "restore_runtime":
+            source = action.get("source") or {}
+            count = len(action.get("restored") or [])
+            if action.get("mode") == "full":
+                logger.status("ok", "runtime", "reinstalled from "
+                              f"{source.get('kind') or 'source'}")
+            else:
+                logger.status("ok", "runtime", f"restored {count} file(s) from "
+                              f"{source.get('kind') or 'source'}")
+            if action.get("missing") or action.get("modified"):
+                logger.detail("damaged", f"{len(action.get('modified') or [])} modified, "
+                                         f"{len(action.get('missing') or [])} missing")
+            if action.get("backup_dir"):
+                logger.detail("backup", action["backup_dir"])
+        elif name == "backup_corrupt_manifest":
+            logger.status("warning", "corrupt manifest",
+                          f"kept at {action.get('backup')}")
+        elif name == "rebuild_manifest":
+            logger.status("warning", "manifest",
+                          f"rebuilt from disk ({action.get('file_count', 0)} files)")
+        elif name == "create_snapshot":
+            logger.status("ok", "snapshot",
+                          f"v{action.get('version')}  {action.get('file_count', 0)} files")
+        elif name == "write_rescue_assets":
+            logger.status("ok", "rescue", action.get("rescue_sh") or "installed")
+        elif name == "prune_backups":
+            logger.detail("backups", f"pruned {len(action.get('removed', []))}")
+        elif name == "rewrite_launchers":
             logger.status("ok", "launchers", ", ".join(action.get("written", [])) or "none")
         elif name == "compile_bytecode":
             logger.status("ok", "bytecode", f"{action.get('pyc_files', 0)} .pyc files")
@@ -1350,14 +1449,32 @@ def _self_repair(args) -> int:
             logger.status("ok", "manifest", f"re-baselined {action.get('file_count', 0)} files")
         else:
             logger.status("ok", name, "")
+    for warning in data.get("warnings", []):
+        logger.warn(f"{warning.get('action')}: {warning.get('warning') or warning.get('error')}")
     for failure in data.get("failed", []):
         logger.error(f"{failure.get('action')}: {failure.get('error')}")
     for problem in data.get("unresolved", []):
         logger.warn(f"{problem['problem']} -> {problem['fix']}")
     if data.get("success"):
-        logger.success("Installation repaired and verified.")
+        restored = ((data.get("restore") or {}).get("restored") or [])
+        if restored:
+            logger.success("Installation restored and verified.")
+        else:
+            logger.success("Installation repaired and verified.")
+    else:
+        logger.error(data.get("error") or "Repair could not complete.")
+        if data.get("hint"):
+            logger.hint(data["hint"])
     print()
     return 0 if data.get("success") else 1
+
+
+def _self_rescue(args) -> int:
+    """Emergency recovery: always attempt a restore, allow downloads."""
+    logger = get_logger()
+    if not logger.json_mode:
+        logger.warn("Emergency recovery: restoring the runtime from the best available source.")
+    return _self_repair(args, emergency=True, title="self rescue")
 
 
 def _self_watch(args) -> int:
@@ -1484,6 +1601,8 @@ def handle_self(args) -> int:
         return _self_verify(args)
     if sub == "repair":
         return _self_repair(args)
+    if sub == "rescue":
+        return _self_rescue(args)
     if sub == "watch":
         return _self_watch(args)
     if sub == "incidents":
@@ -1508,6 +1627,7 @@ def _do_install(args) -> int:
             force=bool(getattr(args, "force", False)),
             completions=not getattr(args, "no_completion", False),
             update_path=not getattr(args, "no_path", False),
+            snapshot=not getattr(args, "no_snapshot", False),
         )
     except installer.InstallerError as exc:
         logger.error(str(exc))
@@ -1530,6 +1650,14 @@ def _do_install(args) -> int:
         logger.detail("Completions", ", ".join(data["completions"]))
     if data.get("shell_configs"):
         logger.detail("PATH updated", ", ".join(data["shell_configs"]))
+    snapshot = data.get("snapshot") or {}
+    if snapshot.get("ok"):
+        logger.detail("Snapshot", f"{snapshot.get('file_count', 0)} files -> {snapshot.get('app')}")
+    elif not snapshot.get("skipped"):
+        logger.warn("Offline recovery snapshot was not written: "
+                    f"{snapshot.get('error') or 'unknown error'}")
+    if data.get("rescue"):
+        logger.detail("Rescue", data["rescue"].get("rescue_sh") or "not installed")
     print()
     logger.success("Wobble now runs from its own app directory; the source checkout is optional.")
     logger.hint("Open a new terminal (or 'source ~/.bashrc') and run: wob self verify")
@@ -1846,6 +1974,9 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> int:
 
     elif cmd == "self":
         return handle_self(args)
+
+    elif cmd == "rescue":
+        return _self_rescue(args)
 
     elif cmd == "install":
         return handle_install(args)

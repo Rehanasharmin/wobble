@@ -259,8 +259,17 @@ class TestInstallerHelpers(unittest.TestCase):
         script = installer._launcher_script(Path("/opt/wobble/app"), "/usr/bin/python3")
         self.assertIn("Wobble launcher", script)
         self.assertIn("APP=/opt/wobble/app", script)
-        self.assertIn('exec "$PY" "$APP/wob.py"', script)
+        self.assertIn('"$PY" "$APP/wob.py" "$@"', script)
         self.assertNotIn("PYTHONPATH", script)
+
+    def test_launcher_can_self_heal(self):
+        script = installer._launcher_script(Path("/opt/wobble/app"), "/usr/bin/python3")
+        self.assertIn('ROOT=/opt/wobble', script)
+        self.assertIn('RESCUE="$ROOT/rescue.sh"', script)
+        self.assertIn("WOBBLE_AUTO_RESCUE", script)
+        # Only the dedicated runtime-load code triggers recovery, so a command
+        # that legitimately exits non-zero is never run twice.
+        self.assertIn('[ "$status" -eq 121 ]', script)
 
     def test_package_root_is_repository(self):
         self.assertTrue((installer.package_root() / "wobble" / "cli.py").is_file())
