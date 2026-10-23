@@ -24,27 +24,34 @@ def print_landing() -> None:
     from wobble.core import theme
 
     use_color = theme.color_enabled()
+    dim = lambda text: theme.paint(text, theme.DIM, enabled=use_color)
+
     print()
-    print(theme.banner(use_color, theme.TAGLINE))
+    print(theme.banner(use_color))
+    print(f"  {dim(theme.TAGLINE)}  {dim('v' + __version__)}")
     print()
-    print(theme.rule("quick start", width=64, use_color=use_color))
-    rows = [
-        ("wob doctor", "audit Termux + detect regressions"),
-        ("wob self status", "fast installation health report"),
-        ("wob create web demo", "scaffold a web project"),
-        ("wob create android app", "scaffold a native Android app"),
-        ("wob dev", "start the dev server for this project"),
-        ("wob preview --lan", "preview locally or on your Wi-Fi"),
-        ("wob self watch", "watch for breakage live"),
-        ("wob --help", "list every command and flag"),
-    ]
-    for command, description in rows:
-        cmd = theme.paint(command, theme.BRIGHT_CYAN, theme.BOLD, enabled=use_color)
-        print(f"  {cmd:<34} {theme.paint(description, theme.DIM, enabled=use_color)}")
-    print()
-    print(theme.paint("Tip: 'wob --json <command>' gives machine-readable output; "
-                      "'wob doctor --timings' shows where time goes.",
-                      theme.DIM, enabled=use_color))
+
+    groups = (
+        ("Start", (
+            ("wob create web demo", "create a web project"),
+            ("wob create android app", "create an Android project"),
+            ("wob dev", "run the current project"),
+            ("wob build", "build it"),
+        )),
+        ("Check", (
+            ("wob doctor", "audit Termux and the toolchain"),
+            ("wob self status", "check the installation"),
+        )),
+    )
+    for title, rows in groups:
+        print(theme.paint(title, theme.BOLD, enabled=use_color))
+        for command, description in rows:
+            cmd = theme.paint(command.ljust(30), theme.BRIGHT_CYAN, enabled=use_color)
+            print(f"  {cmd}{dim(description)}")
+        print()
+
+    print(f"  {theme.paint('wob --help'.ljust(30), theme.BRIGHT_CYAN, enabled=use_color)}"
+          f"{dim('all commands and options')}")
     print()
 
 
@@ -141,8 +148,9 @@ def run(argv: Optional[List[str]] = None) -> int:
 
             print(json.dumps(unexpected_error_payload(exc, verbose=verbose), indent=2))
         else:
-            print(f"[x] Unexpected error: {exc}", file=sys.stderr)
-            print("[i] Run with --verbose for a full traceback, or 'wob doctor' to check your environment.", file=sys.stderr)
+            print(f"error  Unexpected error: {exc}", file=sys.stderr)
+            print("hint   Run with --verbose for a full traceback, or 'wob doctor' "
+                  "to check your environment.", file=sys.stderr)
         return 1
 
 

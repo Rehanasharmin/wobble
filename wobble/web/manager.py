@@ -27,16 +27,16 @@ def run_web_dev(project_path: Path, port: Optional[int] = None, host: str = "127
     if plugin:
         cmd = plugin.get_dev_command(project_path, {"port": target_port, "host": host})
         if cmd:
-            logger.heading(f"Starting {plugin.name} Dev Server")
-            logger.detail("Local URL", f"http://localhost:{target_port}/")
+            logger.heading(f"{plugin.name} dev server")
+            logger.detail("local", f"http://localhost:{target_port}/")
             lan_exposed = host not in ("127.0.0.1", "localhost", "::1")
             if lan_exposed:
                 if lan_ip and lan_ip != "127.0.0.1":
-                    logger.detail("Network LAN URL", f"http://{lan_ip}:{target_port}/")
-                logger.warn("Dev server is exposed on your LAN. Stop it when you leave this network.")
+                    logger.detail("network", f"http://{lan_ip}:{target_port}/")
+                logger.warn("exposed on your LAN; stop the server when you leave this network")
             else:
-                logger.detail("LAN access", "off (use --lan to enable)")
-            logger.step(f"Running: {' '.join(cmd)}")
+                logger.detail("lan", "off (use --lan to enable)")
+            logger.step(f"running: {' '.join(cmd)}")
             # Framework scripts (notably the generated Flask app) read these.
             extra_env = {"PORT": str(target_port), "WOBBLE_HOST": host}
             result = stream_command_result(

@@ -1,7 +1,7 @@
 """
 Wobble ASCII Theme
-A tiny, dependency-free visual identity layer: banners, rules, boxes, status
-badges and progress bars drawn with pure ASCII characters.
+A tiny, dependency-free visual identity layer: the wordmark, plain headings,
+aligned status words and progress meters drawn with pure ASCII characters.
 
 Everything here is optional: when colour is disabled (``NO_COLOR``, ``--no-color``,
 JSON mode, redirected output) the exact same layout is produced without escape
@@ -58,11 +58,11 @@ BANNER_WIDTH = max(len(line) for line in BANNER_ART.splitlines())
 # Pad to a rectangle so boxes and subtitles align perfectly.
 BANNER_ART = "\n".join(line.ljust(BANNER_WIDTH) for line in BANNER_ART.splitlines())
 
-TAGLINE = "Termux -> Wobble -> Projects -> Frameworks -> Build -> Test -> APK/Web"
+TAGLINE = "Android and web development from Termux"
 VERSION_LINE_PREFIX = "wob"
 
 # Compact mark used inside headings / small terminals
-MARK = "[wob]"
+MARK = "wob"
 
 
 # ---------------------------------------------------------------------------
@@ -135,36 +135,30 @@ def banner(use_color: bool = True, subtitle: Optional[str] = None) -> str:
 
 def rule(title: str = "", width: int = 64, use_color: bool = True,
          color: str = CYAN, fill: str = "-") -> str:
-    """Return an ASCII section rule: ``+--[ title ]-----+``."""
+    """Return a plain section heading.
+
+    Titled rules used to be drawn as ``+--[ title ]-----+`` banners. The border
+    was visual noise, so a title now renders as a single bold word and an empty
+    title renders a subtle divider for places that need one.
+    """
     width = max(16, width)
     if not title:
-        return paint("+" + fill * (width - 2) + "+", DIM, enabled=use_color)
-    label = f"[ {title} ]"
-    if len(label) > width - 4:
-        label = label[: width - 5] + "]"
-    left = 2
-    # "+" + left fill + label + right fill + "+" == width
-    right = max(0, width - 4 - len(label))
-    body = "+" + fill * left + paint(label, BOLD, color, enabled=use_color)
-    body += paint(fill * right + "+", DIM, enabled=use_color)
-    return body
+        return paint(fill * width, DIM, enabled=use_color)
+    return paint(title, BOLD, color, enabled=use_color)
 
 
 def box(title: str, rows: Iterable[str], width: int = 64, use_color: bool = True,
         color: str = CYAN) -> str:
-    """Draw a lightweight ASCII box around rows of text (ANSI-aware widths)."""
+    """Render a titled list with no border, so output stays quiet and scannable."""
     width = max(24, width)
-    out = [rule(title, width=width, use_color=use_color, color=color)]
-    inner = width - 4
+    out = []
+    if title:
+        out.append(rule(title, width=width, use_color=use_color, color=color))
     for row in rows:
-        length = visible_len(row)
-        if length > inner:
+        if visible_len(row) > width - 2:
             # Truncate by visible characters while preserving escape sequences.
-            row = _truncate_visible(row, inner - 1) + "."
-            length = visible_len(row)
-        out.append(paint("| ", DIM, enabled=use_color) + row + " " * (inner - length)
-                   + paint(" |", DIM, enabled=use_color))
-    out.append(rule("", width=width, use_color=use_color))
+            row = _truncate_visible(row, width - 3) + "."
+        out.append("  " + row)
     return "\n".join(out)
 
 
@@ -187,44 +181,52 @@ def _truncate_visible(text: str, limit: int) -> str:
     return "".join(out)
 
 
+#: Short, plain status words. No brackets: they read like part of the sentence.
+BADGE_WIDTH = 7
+_BADGE_TABLE = {
+    "ok": ("ok", GREEN),
+    "pass": ("ok", GREEN),
+    "success": ("ok", GREEN),
+    "healthy": ("ok", GREEN),
+    "warning": ("warn", YELLOW),
+    "warn": ("warn", YELLOW),
+    "degraded": ("warn", YELLOW),
+    "missing": ("missing", RED),
+    "error": ("fail", BRIGHT_RED),
+    "fail": ("fail", BRIGHT_RED),
+    "critical": ("fail", BRIGHT_RED),
+    "broken": ("fail", BRIGHT_RED),
+    "info": ("info", CYAN),
+    "run": ("run", MAGENTA),
+    "skip": ("skip", DIM),
+}
+
+
 def badge(status: str, use_color: bool = True) -> str:
-    """Return a tag such as ``[ OK ]`` / ``[WARN]`` / ``[MISS]``."""
-    table = {
-        "ok": ("[ OK ]", GREEN),
-        "pass": ("[ OK ]", GREEN),
-        "success": ("[ OK ]", GREEN),
-        "warning": ("[WARN]", YELLOW),
-        "warn": ("[WARN]", YELLOW),
-        "missing": ("[MISS]", RED),
-        "error": ("[FAIL]", BRIGHT_RED),
-        "fail": ("[FAIL]", BRIGHT_RED),
-        "critical": ("[FAIL]", BRIGHT_RED),
-        "broken": ("[FAIL]", BRIGHT_RED),
-        "degraded": ("[WARN]", YELLOW),
-        "healthy": ("[ OK ]", GREEN),
-        "info": ("[INFO]", CYAN),
-        "run": ("[RUN ]", MAGENTA),
-        "skip": ("[SKIP]", DIM),
-    }
-    label, code = table.get(status.lower(), ("[ ?? ]", DIM))
-    return paint(label, code, BOLD, enabled=use_color)
+    """Return a plain, fixed-width status word such as ``ok`` or ``warn``."""
+    label, code = _BADGE_TABLE.get(str(status).lower(), ("?", DIM))
+    return paint(label.ljust(BADGE_WIDTH), code, BOLD, enabled=use_color)
+
+
+def check(status: str, label: str, detail: str = "", use_color: bool = True,
+          label_width: int = 24) -> str:
+    """One aligned status row: ``ok  Python           3.11.2``."""
+    row = f"{badge(status, use_color)} {label.ljust(label_width)}"
+    if detail:
+        row += f"  {detail}"
+    return row.rstrip()
 
 
 def progress_bar(percent: float, width: int = 22, use_color: bool = True,
                  invert: bool = False) -> str:
-    """ASCII meter: ``[##########>-----------] 45%``.
+    """ASCII meter: ``[##########------------] 45%``.
 
     By default high values are "hot" (disk usage). Pass ``invert=True`` for
     health scores, where 100% should be green rather than red.
     """
     percent = max(0.0, min(100.0, float(percent)))
     filled = int(round((percent / 100.0) * width))
-    if filled >= width:
-        body = "#" * width
-    elif filled <= 0:
-        body = "-" * width
-    else:
-        body = "#" * (filled - 1) + ">" + "-" * (width - filled)
+    body = "#" * filled + "-" * (width - filled)
     heat = 100.0 - percent if invert else percent
     code = GREEN if heat < 70 else (YELLOW if heat < 90 else RED)
     return (paint("[", DIM, enabled=use_color) + paint(body, code, enabled=use_color)
@@ -236,7 +238,7 @@ def kv(key: str, value: str, use_color: bool = True, width: int = 16) -> str:
     return f"{paint((key + ':').ljust(width), DIM, enabled=use_color)} {value}"
 
 
-def list_item(text: str, marker: str = "->", use_color: bool = True) -> str:
+def list_item(text: str, marker: str = "-", use_color: bool = True) -> str:
     return f"{paint(marker, CYAN, enabled=use_color)} {text}"
 
 

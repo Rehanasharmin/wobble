@@ -28,7 +28,11 @@ from wobble.core.logger import Logger, set_logger, get_logger
 
 
 class WobbleArgumentParser(argparse.ArgumentParser):
-    """Raise parse errors so ``main`` can honor JSON mode and return exit 2."""
+    """Raise parse errors so ``main`` can honor JSON mode and return exit 2.
+
+    Help is rendered by :func:`_render_help`: a short, grouped layout instead of
+    argparse's wall of ``{a,b,c,...}`` choices and long option dumps.
+    """
 
     def error(self, message: str):
         raise UsageError(
@@ -36,6 +40,12 @@ class WobbleArgumentParser(argparse.ArgumentParser):
             hint=f"Run '{self.prog} --help' for usage.",
             details={"usage": self.format_usage().strip()},
         )
+
+    def format_help(self) -> str:
+        try:
+            return _render_help(self)
+        except Exception:  # never let a help layout bug hide the command
+            return super().format_help()
 
 
 def _port_number(value: str) -> int:
@@ -55,193 +65,424 @@ def _add_target_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--bin", help="Launcher directory to inspect (default: ~/.local/bin)")
 
 
+# ---------------------------------------------------------------------------
+# Help layout
+#
+# Commands stay exactly as they are; this only decides how they are grouped
+# when the user asks for help. A category (self, web, apk, ...) lists its
+# commands, so `wob self` reads like a section of the manual rather than one
+# opaque command.
+# ---------------------------------------------------------------------------
+_ROOT_GROUPS = (
+    ("Projects", ("create", "project", "plugin")),
+    ("Current project", ("dev", "build", "preview")),
+    ("Android", ("android", "apk")),
+    ("Web", ("web",)),
+    ("Packages", ("deps",)),
+    ("System", ("doctor", "config", "clean")),
+    ("Wobble", ("self", "install", "uninstall", "rescue", "update")),
+    ("Info", ("about", "schema", "completion", "version", "banner", "help")),
+)
+
+_SUBCOMMAND_GROUPS = {
+    "project": (("Manage", ("list", "info", "open", "remove")),),
+    "android": (("Build", ("build", "clean")), ("Inspect", ("info", "limitations"))),
+    "web": (("Run", ("dev", "preview", "serve")), ("Ship", ("build", "test"))),
+    "apk": (
+        ("Build", ("build", "clean")),
+        ("Inspect", ("list", "info", "sign")),
+        ("Device", ("install", "share")),
+    ),
+    "deps": (("Packages", ("install", "add", "remove")), ("Inspect", ("doctor", "list"))),
+    "plugin": (("Browse", ("list", "info")),),
+    "config": (("Settings", ("list", "get", "set")),),
+    "self": (
+        ("Check", ("status", "health", "verify")),
+        ("Repair", ("repair", "rescue")),
+        ("Monitor", ("watch", "incidents")),
+        ("Install", ("install", "uninstall")),
+    ),
+}
+
+_ROOT_EXAMPLES = (
+    "wob create web demo",
+    "wob dev",
+    "wob apk build",
+    "wob doctor",
+    "wob self status",
+)
+
+
+def _subparsers_action(parser: argparse.ArgumentParser):
+    return next((action for action in parser._actions
+                 if isinstance(action, argparse._SubParsersAction)), None)
+
+
+def _decorate_help_tree(parser: argparse.ArgumentParser, prefix: str = "wob",
+                        depth: int = 0) -> None:
+    """Attach summaries, groups and correct ``prog`` names to the tree."""
+    action = _subparsers_action(parser)
+    if not action:
+        return
+    summaries = {choice.dest: (choice.help or "") for choice in action._choices_actions}
+    for name, child in action.choices.items():
+        child.prog = f"{prefix} {name}"
+        child._wob_summary = summaries.get(name) or getattr(child, "_wob_summary", "")
+        if depth == 0:
+            child._wob_groups = _SUBCOMMAND_GROUPS.get(name)
+        _decorate_help_tree(child, child.prog, depth + 1)
+
+
+def _action_label(action: argparse.Action) -> str:
+    if action.option_strings:
+        label = ", ".join(action.option_strings)
+        if action.nargs != 0 and not isinstance(
+                action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            label += " " + (action.metavar or action.dest.upper())
+        return label
+    label = action.metavar or action.dest
+    if getattr(action, "choices", None):
+        label += " {" + ",".join(str(choice) for choice in action.choices) + "}"
+    return label
+
+
+def _action_help(action: argparse.Action) -> str:
+    text = action.help or ""
+    if text in (argparse.SUPPRESS, "==SUPPRESS=="):
+        return ""
+    default = getattr(action, "default", None)
+    is_toggle = isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction))
+    if (not is_toggle and default not in (None, False, argparse.SUPPRESS)
+            and "default" not in text.lower() and action.option_strings):
+        text = f"{text} (default: {default})".strip()
+    return text
+
+
+def _help_rows(rows, width: int, indent: int = 2) -> List[str]:
+    import textwrap
+
+    if not rows:
+        return []
+    gap = 2
+    left = max(len(label) for label, _ in rows) + gap
+    out = []
+    for label, text in rows:
+        prefix = " " * indent + label.ljust(left)
+        wrapped = textwrap.wrap(text, width=max(24, width - indent - left)) if text else [""]
+        if not wrapped:
+            wrapped = [""]
+        out.append((prefix + wrapped[0]).rstrip())
+        for extra in wrapped[1:]:
+            out.append((" " * (indent + left) + extra).rstrip())
+    return out
+
+
+def _render_help(parser: argparse.ArgumentParser) -> str:
+    import shutil
+
+    width = min(max(shutil.get_terminal_size((80, 24)).columns, 60), 100)
+    groups = getattr(parser, "_wob_groups", None)
+    summary = getattr(parser, "_wob_summary", "")
+    action = _subparsers_action(parser)
+    choices = {choice.dest: (choice.help or "") for choice in action._choices_actions} if action else {}
+
+    out: List[str] = []
+    if parser.prog == "wob":
+        out.append(f"Wobble {__version__}")
+    else:
+        out.append(parser.prog)
+    if summary:
+        out.append(summary)
+
+    out.append("")
+    out.append("Usage")
+    if groups:
+        out.append(f"  {parser.prog} <command> [options]")
+    else:
+        usage = parser.format_usage().strip()
+        usage = usage[len("usage:"):].strip() if usage.startswith("usage:") else usage
+        out.extend("  " + line.strip() for line in usage.splitlines())
+
+    if groups:
+        listed = set()
+        for title, names in groups:
+            rows = [(name, choices.get(name, "")) for name in names if name in choices]
+            if not rows:
+                continue
+            listed.update(name for name, _ in rows)
+            out.append("")
+            out.append(title)
+            out.extend(_help_rows(rows, width))
+        leftover = [(name, text) for name, text in choices.items() if name not in listed]
+        if leftover:
+            out.append("")
+            out.append("More")
+            out.extend(_help_rows(leftover, width))
+
+    positionals = [a for a in parser._actions
+                   if not a.option_strings and a.dest not in ("help",)]
+    if positionals and not groups:
+        out.append("")
+        out.append("Arguments")
+        out.extend(_help_rows([(_action_label(a), _action_help(a)) for a in positionals], width))
+
+    optionals = [a for a in parser._actions if a.option_strings and a.dest != "help"]
+    out.append("")
+    out.append("Options")
+    out.extend(_help_rows([(_action_label(a), _action_help(a)) for a in optionals]
+                          + [("-h, --help", "Show this help")], width))
+
+    if parser.prog == "wob":
+        out.append("")
+        out.append("Examples")
+        out.extend("  " + example for example in _ROOT_EXAMPLES)
+
+    out.append("")
+    if groups:
+        out.append(f"Run '{parser.prog} <command> --help' for command options.")
+    return "\n".join(out)
+
+
+def _resolve_help_target(parser: argparse.ArgumentParser, topics):
+    target = parser
+    for topic in topics:
+        action = _subparsers_action(target)
+        if not action or topic not in action.choices:
+            return None
+        target = action.choices[topic]
+    return target
+
+
+def _show_help(parser: argparse.ArgumentParser, topics=()) -> int:
+    """Print help for the root, a category, or a single command."""
+    logger = get_logger()
+    target = _resolve_help_target(parser, topics)
+    if target is None:
+        logger.error(f"Unknown command: {' '.join(topics)}")
+        logger.hint("Run 'wob --help' to see all commands.")
+        return 1
+    if logger.json_mode:
+        action = _subparsers_action(target)
+        usage = target.usage or target.format_usage().strip()
+        if usage.startswith("usage:"):
+            usage = usage[len("usage:"):].strip()
+        payload = {
+            "command": target.prog,
+            "summary": getattr(target, "_wob_summary", ""),
+            "usage": usage,
+        }
+        if action:
+            payload["subcommands"] = [
+                {"name": choice.dest, "description": choice.help} for choice in action._choices_actions
+            ]
+        logger.json_output(payload)
+        return 0
+    print(target.format_help(), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the main argument parser for Wobble CLI."""
     parser = WobbleArgumentParser(
         prog="wob",
-        description="Wobble - the Termux development harness for Android and web projects",
-        epilog="""examples:
-  wob doctor                        audit the environment and detect regressions
-  wob doctor --only android --timings   focus on the SDK and show where time goes
-  wob create android myapp          scaffold a native Android project
-  wob create web site -f react      scaffold a React web project
-  wob apk build && wob apk install  build and install a debug APK
-  wob web preview --lan             preview on localhost and your Wi-Fi
-  wob self status                   fast installation health report (--deep to hash)
-  wob self repair                   heal the runtime from its verified snapshot
-  wob self rescue                   emergency recovery (works when wob won't start)
-  wob self watch                    watch for breakage live
-  wob self incidents                read the recorded failure ledger
-  wob --json project list           machine-readable output for scripts
-
-Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        usage="wob <command> [options]",
+        description="Android and web development from Termux.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser._wob_summary = "Android and web development from Termux."
+    parser._wob_groups = _ROOT_GROUPS
 
-    parser.add_argument("--version", action="version", version=f"Wobble v{__version__}")
-    parser.add_argument("--json", action="store_true", help="Format output as JSON for AI agents and scripts")
-    parser.add_argument("--no-color", action="store_true", help="Disable ANSI color formatting")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose diagnostics")
+    parser.add_argument("--version", action="version", version=f"Wobble v{__version__}",
+                        help="Print the version and exit")
+    parser.add_argument("--json", action="store_true",
+                        help="Print JSON for scripts and agents")
+    parser.add_argument("--no-color", action="store_true", help="Disable colour")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="Show tracebacks for unexpected errors")
 
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
-    # 1. wob create
-    p_create = subparsers.add_parser("create", help="Create a new Android or Web project")
-    p_create.add_argument("type", choices=["android", "web"], help="Project archetype")
-    p_create.add_argument("name", help="Project name / directory")
-    p_create.add_argument("-f", "--framework", default="auto", help="Framework template (e.g. vite, react, vue, svelte, nextjs, python, php, static)")
-    p_create.add_argument("-p", "--package", help="Android package ID (e.g. com.example.myapp)")
-    p_create.add_argument("-d", "--dir", help="Destination folder (defaults to current dir / name)")
+    # -- projects ----------------------------------------------------------
+    p_create = subparsers.add_parser(
+        "create", help="Create an Android or web project",
+        usage="wob create <android|web> <name> [options]")
+    p_create.add_argument("type", choices=["android", "web"],
+                          help="Project type")
+    p_create.add_argument("name", help="Project name and directory")
+    p_create.add_argument("-f", "--framework", default="auto",
+                          help="Template: vite, react, vue, svelte, nextjs, "
+                               "python, php, static")
+    p_create.add_argument("-p", "--package",
+                          help="Android package ID (e.g. com.example.myapp)")
+    p_create.add_argument("-d", "--dir",
+                          help="Destination directory (default: ./<name>)")
 
-    # 2. wob project
-    p_project = subparsers.add_parser("project", help="Manage and inspect projects")
-    sp_project = p_project.add_subparsers(dest="subcommand")
-    p_proj_list = sp_project.add_parser("list", help="List registered & local projects")
-    p_proj_list.add_argument("--path", help="Directory to scan")
-    p_proj_info = sp_project.add_parser("info", help="Show project metadata and statistics")
-    p_proj_info.add_argument("--path", help="Project root directory")
-    p_proj_open = sp_project.add_parser("open", help="Inspect and display project quick-commands")
+    p_project = subparsers.add_parser(
+        "project", help="Manage your projects", usage="wob project <command> [options]")
+    sp_project = p_project.add_subparsers(dest="subcommand", metavar="<command>")
+    p_proj_list = sp_project.add_parser("list", help="List known projects")
+    p_proj_list.add_argument("--path", help="Directory to scan (default: current)")
+    p_proj_info = sp_project.add_parser("info", help="Show project details")
+    p_proj_info.add_argument("--path", help="Project root (default: current)")
+    p_proj_open = sp_project.add_parser("open", help="Show a project's commands")
     p_proj_open.add_argument("name", help="Project name or directory")
-    p_proj_rm = sp_project.add_parser("remove", help="Unregister a project from registry")
-    p_proj_rm.add_argument("name", help="Project name to unregister")
+    p_proj_rm = sp_project.add_parser("remove", help="Unregister a project")
+    p_proj_rm.add_argument("name", help="Project name")
 
-    # 3. wob android
-    p_android = subparsers.add_parser("android", help="Native Android development")
-    sp_android = p_android.add_subparsers(dest="subcommand")
-    p_and_build = sp_android.add_parser("build", help="Compile project into APK with Gradle")
-    p_and_build.add_argument("--release", action="store_true", help="Build release APK")
-    p_and_build.add_argument("--clean", action="store_true", help="Clean prior build before compiling")
-    sp_android.add_parser("clean", help="Clean Gradle build files")
-    sp_android.add_parser("info", help="Inspect Android project configuration")
-    sp_android.add_parser("limitations", help="Report Termux & Android OS technical constraints honestly")
+    # -- android -----------------------------------------------------------
+    p_android = subparsers.add_parser(
+        "android", help="Native Android projects", usage="wob android <command> [options]")
+    sp_android = p_android.add_subparsers(dest="subcommand", metavar="<command>")
+    p_and_build = sp_android.add_parser("build", help="Compile the project with Gradle")
+    p_and_build.add_argument("--release", action="store_true", help="Build a release APK")
+    p_and_build.add_argument("--clean", action="store_true", help="Clean before building")
+    sp_android.add_parser("clean", help="Remove Gradle build output")
+    sp_android.add_parser("info", help="Show the Android project")
+    sp_android.add_parser("limitations", help="Explain Termux and Android limits")
 
-    # 4. wob web
-    p_web = subparsers.add_parser("web", help="Web development workflows")
-    sp_web = p_web.add_subparsers(dest="subcommand")
-    p_web_dev = sp_web.add_parser("dev", help="Start framework development server")
-    p_web_dev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
-    p_web_dev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
-    p_web_dev.add_argument("--lan", action="store_true", help="Expose the dev server on your LAN (0.0.0.0)")
-    sp_web.add_parser("build", help="Build web application for distribution")
-    sp_web.add_parser("test", help="Run web test suite")
-    p_web_prev = sp_web.add_parser("preview", help="Start the hardened preview server (localhost by default)")
-    p_web_prev.add_argument("-p", "--port", type=_port_number, help="Port to serve on (1-65535)")
+    # -- web ---------------------------------------------------------------
+    p_web = subparsers.add_parser(
+        "web", help="Web development", usage="wob web <command> [options]")
+    sp_web = p_web.add_subparsers(dest="subcommand", metavar="<command>")
+    p_web_dev = sp_web.add_parser("dev", help="Start the framework dev server")
+    p_web_dev.add_argument("-p", "--port", type=_port_number, help="Port (1-65535)")
+    p_web_dev.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1)")
+    p_web_dev.add_argument("--lan", action="store_true",
+                           help="Listen on all interfaces (0.0.0.0)")
+    sp_web.add_parser("build", help="Build for production")
+    sp_web.add_parser("test", help="Run the test suite")
+    p_web_prev = sp_web.add_parser("preview", help="Serve the built site")
+    p_web_prev.add_argument("-p", "--port", type=_port_number, help="Port (1-65535)")
     p_web_prev.add_argument("--dir", help="Directory to serve")
-    p_web_prev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
-    p_web_prev.add_argument("--lan", action="store_true", help="Expose the preview on your LAN (0.0.0.0)")
-    p_web_serve = sp_web.add_parser("serve", help="Static HTTP file server")
-    p_web_serve.add_argument("-p", "--port", type=_port_number, help="Port to serve on (1-65535)")
-    p_web_serve.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
-    p_web_serve.add_argument("--lan", action="store_true", help="Expose the server on your LAN (0.0.0.0)")
+    p_web_prev.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1)")
+    p_web_prev.add_argument("--lan", action="store_true",
+                            help="Listen on all interfaces (0.0.0.0)")
+    p_web_serve = sp_web.add_parser("serve", help="Serve a static directory")
+    p_web_serve.add_argument("-p", "--port", type=_port_number, help="Port (1-65535)")
+    p_web_serve.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1)")
+    p_web_serve.add_argument("--lan", action="store_true",
+                             help="Listen on all interfaces (0.0.0.0)")
 
-    # 5. wob apk
-    p_apk = subparsers.add_parser("apk", help="Locate, inspect, build, and install APKs")
-    sp_apk = p_apk.add_subparsers(dest="subcommand")
-    p_apk_build = sp_apk.add_parser("build", help="Build APK for current project")
-    p_apk_build.add_argument("--release", action="store_true", help="Build release APK")
-    p_apk_list = sp_apk.add_parser("list", help="Find all generated APKs")
-    p_apk_list.add_argument("--path", help="Directory to scan")
-    p_apk_info = sp_apk.add_parser("info", help="Inspect APK details (package, SDK, size, permissions)")
-    p_apk_info.add_argument("file", nargs="?", help="Path to APK file")
-    p_apk_inst = sp_apk.add_parser("install", help="Safely install APK on Android (via termux-open, am, or adb)")
-    p_apk_inst.add_argument("file", nargs="?", help="Path to APK file")
-    p_apk_inst.add_argument("--method", choices=["auto", "termux-open", "am", "adb"], default="auto")
-    p_apk_share = sp_apk.add_parser("share", help="Export APK to Android Downloads/shared folder")
-    p_apk_share.add_argument("file", nargs="?", help="Path to APK file")
-    p_apk_share.add_argument("--dest", help="Destination folder (defaults to ~/storage/shared/Download)")
-    p_apk_sign = sp_apk.add_parser("sign", help="Sign APK using apksigner")
-    p_apk_sign.add_argument("file", nargs="?", help="Path to APK file")
-    p_apk_sign.add_argument("--keystore", help="Path to keystore file")
+    # -- apk ---------------------------------------------------------------
+    p_apk = subparsers.add_parser(
+        "apk", help="Build and manage APKs", usage="wob apk <command> [options]")
+    sp_apk = p_apk.add_subparsers(dest="subcommand", metavar="<command>")
+    p_apk_build = sp_apk.add_parser("build", help="Build and locate an APK")
+    p_apk_build.add_argument("--release", action="store_true", help="Build a release APK")
+    p_apk_list = sp_apk.add_parser("list", help="Find built APKs")
+    p_apk_list.add_argument("--path", help="Directory to scan (default: current)")
+    p_apk_info = sp_apk.add_parser("info", help="Inspect an APK")
+    p_apk_info.add_argument("file", nargs="?", help="APK path (default: newest)")
+    p_apk_inst = sp_apk.add_parser("install", help="Install on this device")
+    p_apk_inst.add_argument("file", nargs="?", help="APK path (default: newest)")
+    p_apk_inst.add_argument("--method", choices=["auto", "termux-open", "am", "adb"],
+                            default="auto", help="Installer to use")
+    p_apk_share = sp_apk.add_parser("share", help="Copy to Downloads")
+    p_apk_share.add_argument("file", nargs="?", help="APK path (default: newest)")
+    p_apk_share.add_argument("--dest",
+                             help="Destination folder (default: ~/storage/shared/Download)")
+    p_apk_sign = sp_apk.add_parser("sign", help="Sign with apksigner")
+    p_apk_sign.add_argument("file", nargs="?", help="APK path (default: newest)")
+    p_apk_sign.add_argument("--keystore", help="Keystore file")
     p_apk_sign.add_argument("--alias", help="Key alias")
-    sp_apk.add_parser("clean", help="Remove generated APKs")
+    sp_apk.add_parser("clean", help="Remove built APKs")
 
-    # 6. wob deps
-    p_deps = subparsers.add_parser("deps", help="Unified package and dependency management")
-    sp_deps = p_deps.add_subparsers(dest="subcommand")
-    p_deps_inst = sp_deps.add_parser("install", help="Install dependencies for project or stack")
-    p_deps_inst.add_argument("target", nargs="?", help="Stack name: android, node, python, php, or empty for current project")
-    p_deps_add = sp_deps.add_parser("add", help="Add a dependency")
-    p_deps_add.add_argument("package", help="Package name to add")
-    p_deps_add.add_argument("-m", "--manager", choices=["auto", "termux", "npm", "pip", "composer"], default="auto")
-    p_deps_rm = sp_deps.add_parser("remove", help="Remove a dependency")
-    p_deps_rm.add_argument("package", help="Package name to remove")
-    p_deps_rm.add_argument("-m", "--manager", choices=["auto", "termux", "npm", "pip", "composer"], default="auto")
-    sp_deps.add_parser("doctor", help="Check dependencies health for project")
+    # -- deps --------------------------------------------------------------
+    p_deps = subparsers.add_parser(
+        "deps", help="Install dependencies and toolchains",
+        usage="wob deps <command> [options]")
+    sp_deps = p_deps.add_subparsers(dest="subcommand", metavar="<command>")
+    p_deps_inst = sp_deps.add_parser("install", help="Install for a stack or project")
+    p_deps_inst.add_argument("target", nargs="?",
+                             help="Stack: android, node, python or php (default: project)")
+    p_deps_add = sp_deps.add_parser("add", help="Add a package")
+    p_deps_add.add_argument("package", help="Package name")
+    p_deps_add.add_argument("-m", "--manager",
+                            choices=["auto", "termux", "npm", "pip", "composer"],
+                            default="auto", help="Package manager")
+    p_deps_rm = sp_deps.add_parser("remove", help="Remove a package")
+    p_deps_rm.add_argument("package", help="Package name")
+    p_deps_rm.add_argument("-m", "--manager",
+                           choices=["auto", "termux", "npm", "pip", "composer"],
+                           default="auto", help="Package manager")
+    sp_deps.add_parser("doctor", help="Check dependency health")
     sp_deps.add_parser("list", help="List project dependencies")
 
-    # 7. wob doctor
+    # -- doctor ------------------------------------------------------------
     p_doctor = subparsers.add_parser(
-        "doctor", help="Run comprehensive, cached environment health diagnostics")
+        "doctor", help="Check Termux and the toolchain",
+        usage="wob doctor [options]")
     p_doctor.add_argument("--quick", action="store_true",
-                          help="Skip subprocess version probes (PATH lookups only)")
+                          help="Skip version probes (PATH lookups only)")
     p_doctor.add_argument("--only", metavar="CATEGORIES",
-                          help="Limit to categories: system, resources, environment, "
-                               "tools, web, android, wobble (comma-separated)")
+                          help="Limit to system, resources, environment, tools, "
+                               "web, android or wobble")
     p_doctor.add_argument("--strict", action="store_true",
-                          help="Exit 1 when any check warns or fails (CI-friendly)")
+                          help="Exit 1 when anything warns or fails")
     p_doctor.add_argument("--fail-on", choices=["never", "warning", "missing", "error"],
                           default="never", metavar="LEVEL",
-                          help="Exit 1 at or above this severity (never|warning|missing|error)")
-    p_doctor.add_argument("--timings", action="store_true",
-                          help="Show per-section timing and probe-cache statistics")
-    p_doctor.add_argument("--no-cache", action="store_true",
-                          help="Ignore and do not write the probe cache")
+                          help="Exit 1 at or above this severity")
+    p_doctor.add_argument("--timings", action="store_true", help="Show timings")
+    p_doctor.add_argument("--no-cache", action="store_true", help="Ignore the probe cache")
     p_doctor.add_argument("--save-baseline", action="store_true",
-                          help="Store this run as the regression baseline")
-    p_doctor.add_argument("--no-save", action="store_true",
-                          help="Do not update the regression baseline")
+                          help="Save this run as the baseline")
+    p_doctor.add_argument("--no-save", action="store_true", help="Do not save a baseline")
 
-    # 8. wob plugin
-    p_plugin = subparsers.add_parser("plugin", help="List and inspect framework plugins")
-    sp_plugin = p_plugin.add_subparsers(dest="subcommand")
-    sp_plugin.add_parser("list", help="List all available plugins")
-    p_plug_info = sp_plugin.add_parser("info", help="Display details for a specific plugin")
-    p_plug_info.add_argument("name", help="Plugin name")
+    # -- plugin ------------------------------------------------------------
+    p_plugin = subparsers.add_parser(
+        "plugin", help="Browse framework templates",
+        usage="wob plugin <command> [options]")
+    sp_plugin = p_plugin.add_subparsers(dest="subcommand", metavar="<command>")
+    sp_plugin.add_parser("list", help="List frameworks")
+    p_plug_info = sp_plugin.add_parser("info", help="Show framework details")
+    p_plug_info.add_argument("name", help="Framework name")
 
-    # 9. wob config
-    p_config = subparsers.add_parser("config", help="Manage persistent user configuration")
-    sp_config = p_config.add_subparsers(dest="subcommand")
-    sp_config.add_parser("list", help="List all configuration values")
-    p_cfg_get = sp_config.add_parser("get", help="Get a configuration setting")
-    p_cfg_get.add_argument("key", help="Setting key")
-    p_cfg_set = sp_config.add_parser("set", help="Update a configuration setting")
-    p_cfg_set.add_argument("key", help="Setting key")
+    # -- config ------------------------------------------------------------
+    p_config = subparsers.add_parser(
+        "config", help="Read and write settings",
+        usage="wob config <command> [options]")
+    sp_config = p_config.add_subparsers(dest="subcommand", metavar="<command>")
+    sp_config.add_parser("list", help="List settings")
+    p_cfg_get = sp_config.add_parser("get", help="Read a setting")
+    p_cfg_get.add_argument("key", help="Setting name")
+    p_cfg_set = sp_config.add_parser("set", help="Change a setting")
+    p_cfg_set.add_argument("key", help="Setting name")
     p_cfg_set.add_argument("value", help="New value")
 
-    # 10. wob clean
-    p_clean = subparsers.add_parser("clean", help="Clean temporary caches and build files")
-    p_clean.add_argument("--all", action="store_true", help="Deep clean including node_modules and Gradle cache")
-    p_clean.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt for destructive cleaning")
+    # -- clean -------------------------------------------------------------
+    p_clean = subparsers.add_parser("clean", help="Remove build output")
+    p_clean.add_argument("--all", action="store_true",
+                         help="Also remove node_modules and caches")
+    p_clean.add_argument("-y", "--yes", action="store_true",
+                         help="Skip the confirmation prompt")
 
-    # 11. wob self (install/verify/repair the application itself)
+    # -- self --------------------------------------------------------------
     p_self = subparsers.add_parser(
-        "self", help="Inspect, repair, verify, or uninstall Wobble itself")
-    sp_self = p_self.add_subparsers(dest="subcommand")
+        "self", help="Check, repair and maintain Wobble",
+        usage="wob self <command> [options]")
+    sp_self = p_self.add_subparsers(dest="subcommand", metavar="<command>")
 
     for name, help_text in (
-        ("status", "Fast health report: runtime, launcher, PATH, config, history"),
-        ("health", "Alias for 'self status'"),
+        ("status", "Runtime, launcher and PATH health"),
+        ("health", "Same as status"),
     ):
         p_self_status = sp_self.add_parser(name, help=help_text)
         p_self_status.add_argument("--deep", action="store_true",
-                                   help="Hash every installed file and smoke-test imports")
+                                   help="Hash every installed file")
         p_self_status.add_argument("--strict", action="store_true",
-                                   help="Exit 1 on warnings as well as critical problems")
+                                   help="Exit 1 on warnings too")
         p_self_status.add_argument("--brief", action="store_true",
-                                   help="Print a single-line health summary")
+                                   help="One-line summary")
         _add_target_args(p_self_status)
 
-    p_self_verify = sp_self.add_parser(
-        "verify", help="Verify installed files against the manifest (parallel SHA-256)")
+    p_self_verify = sp_self.add_parser("verify", help="Check installed files")
     p_self_verify.add_argument("--serial", action="store_true",
                                help="Hash sequentially (debugging)")
     p_self_verify.add_argument("--strict", action="store_true",
-                               help="Also fail when the launcher is not executable")
+                               help="Also fail if the launcher is not executable")
     _add_target_args(p_self_verify)
 
-    p_self_repair = sp_self.add_parser(
-        "repair",
-        help="Restore damaged runtime files, then fix launchers, bytecode, config")
+    p_self_repair = sp_self.add_parser("repair", help="Restore damaged files")
     p_self_repair.add_argument("--compile", dest="compile", action="store_true", default=True,
                                help="Recompile missing bytecode (default)")
     p_self_repair.add_argument("--no-compile", dest="compile", action="store_false",
@@ -251,89 +492,86 @@ Docs: README.md  |  Agent guide: AI_GUIDE.md  |  Schema: wob schema""",
     p_self_repair.add_argument("--no-completions", dest="completions", action="store_false",
                                help="Skip shell completions")
     p_self_repair.add_argument("--config", dest="fix_config", action="store_true",
-                               default=True, help="Back up corrupt config/registry (default)")
+                               default=True, help="Back up corrupt config (default)")
     p_self_repair.add_argument("--no-config", dest="fix_config", action="store_false",
-                               help="Leave config/registry files alone")
+                               help="Leave config files alone")
     p_self_repair.add_argument("--path", action="store_true",
-                               help="Add the launcher directory to shell startup files")
+                               help="Add the launcher directory to PATH")
     p_self_repair.add_argument("--accept-current", action="store_true",
-                               help="Re-baseline manifest hashes after a deliberate local patch")
+                               help="Re-baseline hashes after a local patch")
     p_self_repair.add_argument("-y", "--yes", action="store_true",
                                help="Do not ask for confirmation with --accept-current")
     _add_repair_recovery_args(p_self_repair)
     _add_target_args(p_self_repair)
 
-    p_self_rescue = sp_self.add_parser(
-        "rescue", help="Emergency recovery: rebuild the runtime from its snapshot")
+    p_self_rescue = sp_self.add_parser("rescue", help="Rebuild from the snapshot")
     p_self_rescue.add_argument("--dry-run", action="store_true",
-                               help="Show the recovery plan without changing anything")
+                               help="Show the plan without changing anything")
     _add_repair_recovery_args(p_self_rescue, simple=True)
     _add_target_args(p_self_rescue)
 
-    p_self_watch = sp_self.add_parser(
-        "watch", help="Continuously watch installation health and report changes")
+    p_self_watch = sp_self.add_parser("watch", help="Watch health live")
     p_self_watch.add_argument("--interval", type=float, default=2.0, metavar="SECONDS",
-                              help="Seconds between checks (default 2, minimum 0.2)")
+                              help="Seconds between checks (default: 2)")
     p_self_watch.add_argument("--count", type=int, default=0, metavar="N",
                               help="Stop after N checks (default: run until Ctrl+C)")
     p_self_watch.add_argument("--deep", action="store_true",
                               help="Hash files on every tick (slow)")
     _add_target_args(p_self_watch)
 
-    p_self_incidents = sp_self.add_parser(
-        "incidents", help="Show or clear the recorded failure ledger")
+    p_self_incidents = sp_self.add_parser("incidents", help="Show the failure log")
     p_self_incidents.add_argument("--limit", type=int, default=10, metavar="N",
-                                  help="Show at most N incidents (default 10)")
+                                  help="Show at most N incidents (default: 10)")
     p_self_incidents.add_argument("--clear", action="store_true",
-                                  help="Delete the ledger after showing it")
+                                  help="Delete the log after showing it")
 
-    p_self_install = sp_self.add_parser("install", help="Install a standalone copy of Wobble")
+    p_self_install = sp_self.add_parser("install", help="Install a standalone copy")
     _add_install_args(p_self_install)
-    p_self_uninstall = sp_self.add_parser("uninstall", help="Remove the Wobble installation")
+    p_self_uninstall = sp_self.add_parser("uninstall", help="Remove the installation")
     _add_uninstall_args(p_self_uninstall)
 
-    # top-level aliases for discoverability
-    p_install = subparsers.add_parser("install", help="Install Wobble as standalone software")
+    # Top-level aliases: same actions, easier to discover.
+    p_install = subparsers.add_parser("install", help="Install Wobble as software")
     _add_install_args(p_install)
-    p_uninstall = subparsers.add_parser("uninstall", help="Remove Wobble from this system")
+    p_uninstall = subparsers.add_parser("uninstall", help="Remove the installation")
     _add_uninstall_args(p_uninstall)
-    p_rescue = subparsers.add_parser(
-        "rescue", help="Emergency recovery for a damaged Wobble installation")
+    p_rescue = subparsers.add_parser("rescue", help="Emergency recovery")
     p_rescue.add_argument("--dry-run", action="store_true",
-                          help="Show the recovery plan without changing anything")
+                          help="Show the plan without changing anything")
     _add_repair_recovery_args(p_rescue, simple=True)
     _add_target_args(p_rescue)
 
-    # 11b. wob update / version / help
-    subparsers.add_parser("update", help="Check for Wobble updates")
-    subparsers.add_parser("version", help="Print the Wobble version")
-    subparsers.add_parser("help", help="Show this help message")
+    # -- info and tools ----------------------------------------------------
+    subparsers.add_parser("update", help="Check for updates")
+    subparsers.add_parser("version", help="Print the version")
+    p_help = subparsers.add_parser("help", help="Show help")
+    p_help.add_argument("topic", nargs="*", metavar="command",
+                        help="Command to describe (e.g. self status)")
+    subparsers.add_parser("banner", help="Print the wordmark")
+    subparsers.add_parser("about", help="Show version and environment")
+    subparsers.add_parser("schema", help="Print the CLI schema (JSON)")
+    p_compl = subparsers.add_parser("completion", help="Generate shell completion")
+    p_compl.add_argument("shell", nargs="?", default="bash", choices=["bash", "zsh"],
+                         help="Shell to generate a script for (default: bash)")
 
-    # 11c. identity
-    subparsers.add_parser("banner", help="Print the Wobble ASCII wordmark")
-    subparsers.add_parser("about", help="Show version, install mode, and environment")
+    # -- shortcuts ---------------------------------------------------------
+    p_build = subparsers.add_parser("build", help="Build the current project")
+    p_build.add_argument("--release", action="store_true",
+                         help="Build a release APK or production bundle")
 
-    # 12. wob schema
-    subparsers.add_parser("schema", help="Output machine-readable CLI schema for AI agents")
+    p_dev = subparsers.add_parser("dev", help="Run the current project")
+    p_dev.add_argument("-p", "--port", type=_port_number, help="Port (1-65535)")
+    p_dev.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1)")
+    p_dev.add_argument("--lan", action="store_true",
+                       help="Listen on all interfaces (0.0.0.0)")
 
-    # 13. wob completion
-    p_compl = subparsers.add_parser("completion", help="Generate shell completion script (bash or zsh)")
-    p_compl.add_argument("shell", nargs="?", default="bash", choices=["bash", "zsh"], help="Shell to generate a script for")
+    p_prev = subparsers.add_parser("preview", help="Preview the current project")
+    p_prev.add_argument("-p", "--port", type=_port_number, help="Port (1-65535)")
+    p_prev.add_argument("--host", default=None, help="Host to bind (default: 127.0.0.1)")
+    p_prev.add_argument("--lan", action="store_true",
+                        help="Listen on all interfaces (0.0.0.0)")
 
-    # Shortcuts
-    p_build = subparsers.add_parser("build", help="Intelligent build for current project")
-    p_build.add_argument("--release", action="store_true", help="Build release APK or production bundle")
-
-    p_dev = subparsers.add_parser("dev", help="Start dev server for current project")
-    p_dev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
-    p_dev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
-    p_dev.add_argument("--lan", action="store_true", help="Expose on LAN (0.0.0.0)")
-
-    p_prev = subparsers.add_parser("preview", help="Preview the current project locally (--lan for Wi-Fi)")
-    p_prev.add_argument("-p", "--port", type=_port_number, help="Port to listen on (1-65535)")
-    p_prev.add_argument("--host", default=None, help="Host address to bind (default: 127.0.0.1)")
-    p_prev.add_argument("--lan", action="store_true", help="Expose on LAN (0.0.0.0)")
-
+    _decorate_help_tree(parser, parser.prog)
     return parser
 
 
@@ -464,8 +702,8 @@ def handle_create(args) -> int:
         return 1
 
     logger.heading(f"Creating new {p_type.capitalize()} project: {name}")
-    logger.detail("Framework", plugin.name)
-    logger.detail("Location", str(target_dir))
+    logger.detail("framework", plugin.name)
+    logger.detail("location", str(target_dir))
 
     options = {
         "package": args.package or f"com.example.{name.lower().replace('-', '_')}",
@@ -497,16 +735,16 @@ def handle_create(args) -> int:
             }
             logger.json_output(result)
         else:
-            logger.success(f"Project '{name}' successfully created!")
-            print("\nNext steps:")
+            logger.success(f"Project '{name}' created")
+            print()
+            print("Next")
             print(f"  cd {target_dir}")
             if p_type == "android":
-                print("  wob apk build       # Build debug APK")
-                print("  wob apk install     # Install APK on phone")
+                print("  wob apk build")
+                print("  wob apk install")
             else:
-                print("  wob deps install    # Install dependencies")
-                print("  wob web dev         # Start development server")
-                print("  wob web preview     # Preview locally (add --lan for Wi-Fi)")
+                print("  wob deps install")
+                print("  wob web dev")
             print()
         return 0
     else:
@@ -531,16 +769,16 @@ def handle_project(args) -> int:
         if logger.json_mode:
             logger.json_output({"projects": projects, "count": len(projects)})
         else:
-            logger.heading("Detected & Registered Projects")
+            logger.heading("Projects")
             if not projects:
-                print("  No projects found. Create one with 'wob create android <name>' or 'wob create web <name>'")
+                print("  none yet. Create one with: wob create web <name>")
             else:
                 from wobble.core import theme
                 for p in projects:
-                    reg_tag = theme.paint("[registered]", theme.DIM, enabled=logger.use_color) if p["registered"] else ""
                     name = theme.paint(f"{p['name']:<18}", theme.BOLD, enabled=logger.use_color)
-                    arrow = theme.paint("->", theme.CYAN, enabled=logger.use_color)
-                    print(f"  {arrow} {name} ({p['type']} / {p['framework']}) - {p['path']} {reg_tag}")
+                    kind = f"{p['type']}/{p['framework']}"
+                    tag = theme.paint("  registered", theme.DIM, enabled=logger.use_color) if p["registered"] else ""
+                    print(f"  {name} {kind:<16} {p['path']}{tag}")
             print()
         return 0
 
@@ -554,14 +792,14 @@ def handle_project(args) -> int:
             logger.json_output(info)
         else:
             logger.heading(f"Project Info: {info['name']}")
-            logger.detail("Type", info.get("type"))
-            logger.detail("Framework", info.get("framework"))
-            logger.detail("Version", info.get("version"))
+            logger.detail("type", info.get("type"))
+            logger.detail("framework", info.get("framework"))
+            logger.detail("version", info.get("version"))
             if info.get("package_id"):
-                logger.detail("Package ID", info.get("package_id"))
-            logger.detail("Location", str(target.resolve()))
+                logger.detail("package id", info.get("package_id"))
+            logger.detail("location", str(target.resolve()))
             metrics = info.get("metrics", {})
-            logger.detail("Files", f"{metrics.get('file_count', 0)} files ({metrics.get('total_size_human', '')})")
+            logger.detail("files", f"{metrics.get('file_count', 0)} files ({metrics.get('total_size_human', '')})")
             print()
         return 0
 
@@ -577,9 +815,10 @@ def handle_project(args) -> int:
             logger.json_output(p)
         else:
             logger.heading(f"Project: {p['name']}")
-            print(f"  Path: {p['path']}")
-            print(f"  Type: {p['type']} ({p['framework']})")
-            print("\nQuick Commands:")
+            logger.detail("path", p["path"])
+            logger.detail("type", f"{p['type']} ({p['framework']})")
+            print()
+            print("Commands")
             print(f"  cd {p['path']}")
             if p["type"] == "android":
                 print("  wob apk build")
@@ -621,7 +860,7 @@ def handle_android(args) -> int:
         if logger.json_mode:
             logger.json_output(res)
         elif res.get("success"):
-            logger.detail("Build time", f"{res['elapsed_seconds']}s")
+            logger.detail("build time", f"{res['elapsed_seconds']}s")
         return 0 if res.get("success") else 1
 
     elif sub == "clean":
@@ -647,9 +886,9 @@ def handle_android(args) -> int:
         else:
             logger.heading("Android Project Overview")
             if spec:
-                logger.detail("Name", spec.name)
-                logger.detail("Package ID", spec.package_id)
-            logger.detail("APKs found", len(apks))
+                logger.detail("name", spec.name)
+                logger.detail("package id", spec.package_id)
+            logger.detail("apks found", len(apks))
             for a in apks:
                 logger.detail("  APK", a.name)
             print()
@@ -664,10 +903,10 @@ def handle_android(args) -> int:
             print(f"  Philosophy: {report['philosophy']}\n")
             from wobble.core import theme
             for lim in report["limitations"]:
-                topic = theme.paint(f"* {lim['topic']}", theme.BOLD, enabled=logger.use_color)
+                topic = theme.paint(lim["topic"], theme.BOLD, enabled=logger.use_color)
                 print(f"  {topic}")
-                print(f"    Reality:  {lim['reality']}")
-                print(f"    Solution: {lim['solution']}")
+                print(f"    now  {lim['reality']}")
+                print(f"    fix  {lim['solution']}")
                 print()
         return 0
     return 0
@@ -703,7 +942,7 @@ def handle_web(args) -> int:
         if get_logger().json_mode:
             get_logger().json_output(res)
         elif res.get("success"):
-            get_logger().detail("Build time", f"{res['elapsed_seconds']}s")
+            get_logger().detail("build time", f"{res['elapsed_seconds']}s")
         else:
             get_logger().error(res.get("error") or res.get("stderr") or "Web build failed.")
         return 0 if res.get("success") else 1
@@ -737,7 +976,7 @@ def handle_apk(args) -> int:
         if logger.json_mode:
             logger.json_output(res)
         elif res.get("success"):
-            logger.detail("Build time", f"{res['elapsed_seconds']}s")
+            logger.detail("build time", f"{res['elapsed_seconds']}s")
         return 0 if res.get("success") else 1
 
     elif sub == "list":
@@ -746,16 +985,15 @@ def handle_apk(args) -> int:
         if logger.json_mode:
             logger.json_output({"apks": [str(a) for a in apks], "count": len(apks)})
         else:
-            logger.heading("Discovered APKs")
+            logger.heading("APKs")
             if not apks:
-                print("  No APKs found. Run 'wob apk build' to build one.")
+                print("  none yet. Build one with: wob apk build")
             else:
                 from wobble.core import theme
                 for a in apks:
                     size = f"{round(a.stat().st_size / (1024 * 1024), 2)} MB"
-                    name = theme.paint(a.name, theme.BOLD, enabled=logger.use_color)
-                    arrow = theme.paint("->", theme.CYAN, enabled=logger.use_color)
-                    print(f"  {arrow} {name} ({size}) - {a}")
+                    name = theme.paint(f"{a.name:<28}", theme.BOLD, enabled=logger.use_color)
+                    print(f"  {name} {size:>9}  {a}")
             print()
         return 0
 
@@ -780,16 +1018,16 @@ def handle_apk(args) -> int:
             return 1
         else:
             logger.heading(f"APK Information: {info.get('file_name')}")
-            logger.detail("Package Name", info.get("package_name"))
-            logger.detail("App Label", info.get("app_label"))
-            logger.detail("Version", f"{info.get('version_name')} (Code: {info.get('version_code')})")
-            logger.detail("SDK Support", f"Min: {info.get('min_sdk')} | Target: {info.get('target_sdk')}")
-            logger.detail("File Size", info.get("size_human"))
-            logger.detail("SHA-256", info.get("sha256"))
-            logger.detail("Native ABIs", ", ".join(info.get("native_abis", [])))
+            logger.detail("package", info.get("package_name"))
+            logger.detail("label", info.get("app_label"))
+            logger.detail("version", f"{info.get('version_name')} (Code: {info.get('version_code')})")
+            logger.detail("sdk", f"Min: {info.get('min_sdk')} | Target: {info.get('target_sdk')}")
+            logger.detail("size", info.get("size_human"))
+            logger.detail("sha256", info.get("sha256"))
+            logger.detail("abis", ", ".join(info.get("native_abis", [])))
             perms = info.get("permissions", [])
             if perms:
-                logger.detail("Permissions", f"{len(perms)} declared ({', '.join(perms[:3])}...)")
+                logger.detail("permissions", f"{len(perms)} declared ({', '.join(perms[:3])}...)")
             print()
         return 0
 
@@ -832,7 +1070,7 @@ def handle_apk(args) -> int:
         else:
             if res.get("success"):
                 logger.success(res.get("message"))
-                logger.detail("Destination", res.get("destination"))
+                logger.detail("destination", res.get("destination"))
             else:
                 logger.error(f"Share failed: {res.get('error')}")
                 if res.get("hint"):
@@ -856,7 +1094,7 @@ def handle_apk(args) -> int:
         else:
             if res.get("success"):
                 logger.success(res.get("message"))
-                logger.detail("Keystore", res.get("keystore"))
+                logger.detail("keystore", res.get("keystore"))
             else:
                 logger.error(f"Sign failed: {res.get('error')}")
                 if res.get("hint"):
@@ -924,13 +1162,13 @@ def handle_deps(args) -> int:
         if get_logger().json_mode:
             get_logger().json_output(res)
         else:
-            get_logger().heading(f"Dependency Health: {res['project']}")
+            get_logger().heading(f"Dependencies: {res['project']}")
             if res["status"] == "ok":
-                get_logger().success("All project dependencies appear healthy.")
+                get_logger().success("all dependencies look healthy")
             else:
                 for issue in res["issues"]:
                     get_logger().warn(issue["message"])
-                    print(f"      Fix: {issue['fix']}")
+                    print(f"        fix  {issue['fix']}")
             print()
         return 0
 
@@ -941,17 +1179,19 @@ def handle_deps(args) -> int:
         else:
             get_logger().heading(f"Dependencies: {res['project']}")
             if res.get("dependencies"):
-                print("  Dependencies:")
+                print("  Packages")
                 for k, v in res["dependencies"].items():
-                    print(f"    - {k}: {v}")
+                    print(f"    {k:<24} {v}")
             if res.get("dev_dependencies"):
-                print("  Dev Dependencies:")
+                print("  Dev packages")
                 for k, v in res["dev_dependencies"].items():
-                    print(f"    - {k}: {v}")
+                    print(f"    {k:<24} {v}")
             if res.get("system"):
-                print("  System Packages:")
-                for s in res["system"]:
-                    print(f"    - {s}")
+                print("  System")
+                for pkg in res["system"]:
+                    print(f"    {pkg}")
+            if not any(res.get(k) for k in ("dependencies", "dev_dependencies", "system")):
+                print("  none declared")
             for issue in res.get("errors", []):
                 get_logger().error(f"Cannot read {issue['path']}: {issue['error']}")
             print()
@@ -970,13 +1210,12 @@ def handle_plugin(args) -> int:
         if logger.json_mode:
             logger.json_output({"plugins": [p.to_dict() for p in plugins], "count": len(plugins)})
         else:
-            logger.heading("Available Framework Plugins")
+            logger.heading("Frameworks")
             from wobble.core import theme
             for p in plugins:
-                cat = theme.paint(f"[{p.category}]", theme.DIM, enabled=logger.use_color)
-                name = theme.paint(f"{p.name:<16}", theme.BOLD, enabled=logger.use_color)
-                arrow = theme.paint("->", theme.CYAN, enabled=logger.use_color)
-                print(f"  {arrow} {name} {cat:<10} - {p.description}")
+                name = theme.paint(f"{p.name:<12}", theme.BOLD, enabled=logger.use_color)
+                cat = theme.paint(f"{p.category:<8}", theme.DIM, enabled=logger.use_color)
+                print(f"  {name} {cat} {p.description}")
             print()
         return 0
 
@@ -990,13 +1229,13 @@ def handle_plugin(args) -> int:
             logger.json_output(p.to_dict())
         else:
             logger.heading(f"Plugin: {p.name}")
-            logger.detail("Version", p.version)
-            logger.detail("Category", p.category)
-            logger.detail("Description", p.description)
-            logger.detail("Required Tools", ", ".join(p.required_tools) if p.required_tools else "None")
-            logger.detail("Termux Packages", ", ".join(p.required_system_packages) if p.required_system_packages else "None")
+            logger.detail("version", p.version)
+            logger.detail("category", p.category)
+            logger.detail("description", p.description)
+            logger.detail("tools", ", ".join(p.required_tools) if p.required_tools else "none")
+            logger.detail("packages", ", ".join(p.required_system_packages) if p.required_system_packages else "none")
             prereq = p.check_prerequisites()
-            logger.detail("Ready on Host", "Yes" if prereq["ready"] else f"Missing: {prereq['missing_tools']}")
+            logger.detail("ready", "yes" if prereq["ready"] else f"Missing: {prereq['missing_tools']}")
             print()
         return 0
     return 0
@@ -1015,9 +1254,9 @@ def handle_config(args) -> int:
         if logger.json_mode:
             logger.json_output(cfg.all())
         else:
-            logger.heading("Wobble Configuration Settings")
+            logger.heading("Settings")
             for k, v in cfg.all().items():
-                print(f"  {k:<26} = {v}")
+                print(f"  {k:<26} {v}")
             print()
         return 0
     elif sub == "get":
@@ -1219,7 +1458,9 @@ def handle_about(args) -> int:
 
     logger.banner(theme.TAGLINE)
     print()
-    print(theme.box(f"about wobble v{__version__}", rows, width=70, use_color=logger.use_color))
+    print(theme.rule(f"About Wobble v{__version__}", width=70, use_color=logger.use_color))
+    for row in rows:
+        print("  " + row)
     print()
     return 0
 
@@ -1252,17 +1493,14 @@ def _self_status(args) -> int:
         counts = report["counts"]
         overall = "ok" if report["ok"] else (
             "error" if report["status"] == "broken" else "warning")
-        print(f"{theme.badge(overall, logger.use_color)} "
+        print(f"{theme.badge(overall, logger.use_color).rstrip()}  "
               f"{report['status']}  {report['mode']} v{report['version']}  "
-              f"{counts['ok']} ok, {counts['warning']} warnings, {counts['critical']} critical"
-              f"  ({report['elapsed_ms']} ms)")
+              f"{counts['ok']} ok  {counts['warning']} warnings  "
+              f"{counts['critical']} critical  ({report['elapsed_ms']} ms)")
         return code
 
     print(selfcheck.render(report, use_color=logger.use_color))
-    if report["mode"] == "source-checkout":
-        print()
-        logger.hint("Running from a source checkout; install it with: wob self install")
-    elif report["mode"] == "legacy-symlink":
+    if report["mode"] == "legacy-symlink":
         print()
         logger.warn("Legacy symlink install: deleting the checkout would break 'wob'.")
         logger.hint("Switch to a standalone install with: wob self install")
@@ -1297,7 +1535,7 @@ def _self_verify(args) -> int:
         logger.json_output(data)
         return 0 if data.get("ok") else 1
 
-    print(theme.rule("installation integrity", width=66, use_color=logger.use_color))
+    print(theme.rule("Installation", width=66, use_color=logger.use_color))
     if data.get("error"):
         logger.status("warning", "manifest", data["error"])
         logger.hint(data.get("hint") or "Install Wobble with: sh install.sh")
@@ -1307,8 +1545,8 @@ def _self_verify(args) -> int:
     logger.status("ok" if data.get("ok") else "error", "manifest",
                   f"{data.get('checked', 0)}/{data.get('file_count', 0)} files verified "
                   f"in {data.get('elapsed_ms', 0)} ms")
-    logger.detail("Hashed", _human_bytes(data.get("hashed_bytes", 0)))
-    logger.detail("Parallel", "yes" if data.get("parallel") else "no (small tree)")
+    logger.detail("hashed", _human_bytes(data.get("hashed_bytes", 0)))
+    logger.detail("parallel", "yes" if data.get("parallel") else "no (small tree)")
     for rel in data.get("missing", [])[:8]:
         logger.detail("missing", rel)
     for rel in data.get("modified", [])[:8]:
@@ -1329,7 +1567,7 @@ def _self_verify(args) -> int:
     return 0 if data.get("ok") else 1
 
 
-def _self_repair(args, emergency: bool = False, title: str = "self repair") -> int:
+def _self_repair(args, emergency: bool = False, title: str = "Repair") -> int:
     from wobble.core import selfcheck, theme
 
     logger = get_logger()
@@ -1474,7 +1712,7 @@ def _self_rescue(args) -> int:
     logger = get_logger()
     if not logger.json_mode:
         logger.warn("Emergency recovery: restoring the runtime from the best available source.")
-    return _self_repair(args, emergency=True, title="self rescue")
+    return _self_repair(args, emergency=True, title="Rescue")
 
 
 def _self_watch(args) -> int:
@@ -1490,7 +1728,7 @@ def _self_watch(args) -> int:
     deep = bool(getattr(args, "deep", False))
 
     if not logger.json_mode:
-        print(f"[wob] watching installation health every {interval:g}s "
+        print(f"watching installation health every {interval:g}s "
               f"({'deep' if deep else 'fast'}; Ctrl+C to stop)", flush=True)
 
     previous = None
@@ -1535,16 +1773,17 @@ def _self_watch(args) -> int:
                 for change in changes:
                     before = change["from"] or "absent"
                     after = change["to"] or "absent"
-                    print(f"[{stamp}] {change['change']:<9} {change['code']}: "
+                    print(f"{stamp}  {change['change']:<9} {change['code']}  "
                           f"{before} -> {after}", flush=True)
                 if any(change["change"] in ("new", "worsened") and change["to"] == "critical"
                        for change in changes):
-                    print(f"[{stamp}] fix: wob self repair", flush=True)
+                    print(f"{stamp}  fix       run: wob self repair", flush=True)
             else:
-                print(f"[{stamp}] {report['status']}  "
-                      f"{report['counts']['ok']} ok, {report['counts']['warning']} warnings, "
-                      f"{report['counts']['critical']} critical  ({report['elapsed_ms']} ms)",
-                      flush=True)
+                print(f"{stamp}  {report['status']}  "
+                      f"{report['counts']['ok']} ok  "
+                      f"{report['counts']['warning']} warnings  "
+                      f"{report['counts']['critical']} critical  "
+                      f"({report['elapsed_ms']} ms)", flush=True)
             previous = snapshot
             remaining -= 1
             if remaining == 0:
@@ -1574,7 +1813,7 @@ def _self_incidents(args) -> int:
         logger.json_output(payload)
         return 0
 
-    print(theme.rule("failure ledger", width=66, use_color=logger.use_color))
+    print(theme.rule("Failure log", width=66, use_color=logger.use_color))
     if not incidents:
         logger.status("ok", "incidents", "none recorded")
     else:
@@ -1638,26 +1877,25 @@ def _do_install(args) -> int:
         return 0
 
     if not os.environ.get("WOBBLE_INSTALL_QUIET"):
-        logger.banner(theme.TAGLINE)
         print()
-    print(theme.rule("installed", width=64, use_color=logger.use_color))
+    print(theme.rule("Installed", width=64, use_color=logger.use_color))
     logger.status("ok", "version", data["version"])
-    logger.detail("App dir", data["app_dir"])
-    logger.detail("Launcher", data["launcher"])
-    logger.detail("Files", f"{data['file_count']} ({_human_bytes(data['total_bytes'])})")
-    logger.detail("Time", f"{data['elapsed_seconds']}s")
+    logger.detail("app dir", data["app_dir"])
+    logger.detail("launcher", data["launcher"])
+    logger.detail("files", f"{data['file_count']} ({_human_bytes(data['total_bytes'])})")
+    logger.detail("time", f"{data['elapsed_seconds']}s")
     if data.get("completions"):
-        logger.detail("Completions", ", ".join(data["completions"]))
+        logger.detail("completions", ", ".join(data["completions"]))
     if data.get("shell_configs"):
-        logger.detail("PATH updated", ", ".join(data["shell_configs"]))
+        logger.detail("PATH", ", ".join(data["shell_configs"]))
     snapshot = data.get("snapshot") or {}
     if snapshot.get("ok"):
-        logger.detail("Snapshot", f"{snapshot.get('file_count', 0)} files -> {snapshot.get('app')}")
+        logger.detail("snapshot", f"{snapshot.get('file_count', 0)} files -> {snapshot.get('app')}")
     elif not snapshot.get("skipped"):
         logger.warn("Offline recovery snapshot was not written: "
                     f"{snapshot.get('error') or 'unknown error'}")
     if data.get("rescue"):
-        logger.detail("Rescue", data["rescue"].get("rescue_sh") or "not installed")
+        logger.detail("rescue", data["rescue"].get("rescue_sh") or "not installed")
     print()
     logger.success("Wobble now runs from its own app directory; the source checkout is optional.")
     logger.hint("Open a new terminal (or 'source ~/.bashrc') and run: wob self verify")
@@ -1692,7 +1930,7 @@ def _do_uninstall(args) -> int:
         logger.json_output(data)
         return 0
 
-    print(theme.rule("uninstalled", width=64, use_color=logger.use_color))
+    print(theme.rule("Uninstalled", width=64, use_color=logger.use_color))
     for path in data.get("removed", []):
         logger.detail("removed", path)
     for path in data.get("purged", []):
@@ -1725,12 +1963,13 @@ def handle_update(args) -> int:
             "upgrade": "sh install.sh" if info.get("standalone") else "git pull && sh install.sh",
         })
         return 0
-    logger.heading("Wobble Updates")
-    logger.detail("Installed version", f"v{__version__}")
-    logger.detail("Install mode", info.get("mode"))
-    logger.info("Upgrade by re-running the installer from a fresh checkout:")
-    logger.detail("Upgrade", "git pull && sh install.sh")
-    logger.hint("Reinstalling keeps your projects, registry, config, and keystore.")
+    logger.heading("Updates")
+    logger.detail("installed", f"v{__version__}")
+    logger.detail("mode", info.get("mode"))
+    print()
+    print("To upgrade")
+    print("  git pull && sh install.sh")
+    logger.hint("Projects, registry, config and keystores are kept.")
     print()
     return 0
 
@@ -1917,10 +2156,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         return EXIT_FAILURE
 
 
+#: Commands that only group other commands. Typing one on its own shows its
+#: command list instead of silently running an unrelated default action.
+CATEGORY_COMMANDS = ("project", "android", "web", "apk", "deps", "plugin", "config", "self")
+
+
 def _dispatch(parser: argparse.ArgumentParser, args) -> int:
     """Route a parsed command to its handler. Heavy modules load only when needed."""
     logger = get_logger()
     cmd = args.command
+
+    # A category without a subcommand is an incomplete command, not a default
+    # action. Show its menu so `wob self` answers "what can self do?".
+    if cmd in CATEGORY_COMMANDS and not getattr(args, "subcommand", None):
+        return _show_help(parser, (cmd,))
 
     # Top-level commands
     if cmd == "doctor":
@@ -1960,8 +2209,7 @@ def _dispatch(parser: argparse.ArgumentParser, args) -> int:
         return 0
 
     elif cmd == "help":
-        parser.print_help()
-        return 0
+        return _show_help(parser, getattr(args, "topic", None) or ())
 
     elif cmd == "update":
         return handle_update(args)

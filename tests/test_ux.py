@@ -80,6 +80,44 @@ class TestCompletion(unittest.TestCase):
         self.assertIn("--yes", [fl["name"] for fl in schema["commands"]["clean"]["flags"]])
 
 
+class TestHelpLayout(unittest.TestCase):
+    def _capture(self, argv):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main(argv)
+        return code, buf.getvalue()
+
+    def test_root_help_is_grouped(self):
+        from wobble.cli import build_parser
+        text = build_parser().format_help()
+        for group in ("Projects", "Current project", "Android", "Wobble", "Info"):
+            self.assertIn(group, text)
+        # No giant argparse choices blob, no boxed plus signs.
+        self.assertNotIn("{create,project", text)
+        self.assertNotIn("+--[", text)
+        self.assertIn("self", text)
+
+    def test_category_shows_its_commands(self):
+        code, text = self._capture(["self"])
+        self.assertEqual(code, 0)
+        self.assertIn("wob self", text)
+        self.assertIn("status", text)
+        self.assertIn("repair", text)
+        self.assertIn("incidents", text)
+        # It is a category menu, not the health report.
+        self.assertNotIn("Summary", text)
+
+    def test_help_topics(self):
+        code, text = self._capture(["help", "self", "status"])
+        self.assertEqual(code, 0)
+        self.assertIn("wob self status", text)
+        self.assertIn("--deep", text)
+
+    def test_unknown_help_topic(self):
+        code, _ = self._capture(["help", "nonsense"])
+        self.assertEqual(code, 1)
+
+
 class TestClean(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp(prefix="wobble_clean_")

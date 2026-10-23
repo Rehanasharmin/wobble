@@ -30,10 +30,10 @@ if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
     RESET=""; BOLD=""; DIM=""; CYAN=""; GREEN=""; YELLOW=""; RED=""; MAGENTA=""
 fi
 
-step() { printf '  %s[%s]%s %s\n' "$CYAN" "$1" "$RESET" "$2"; }
-ok()   { printf '  %s[+]%s %s\n' "$GREEN$BOLD" "$RESET" "$1"; }
-warn() { printf '  %s[!]%s %s\n' "$YELLOW$BOLD" "$RESET" "$1"; }
-fail() { printf '  %s[x]%s %s\n' "$RED$BOLD" "$RESET" "$1" >&2; }
+step() { printf '  %s%s%s  %s\n' "$DIM" "$1" "$RESET" "$2"; }
+ok()   { printf '  %sok%s     %s\n' "$GREEN$BOLD" "$RESET" "$1"; }
+warn() { printf '  %swarn%s   %s\n' "$YELLOW$BOLD" "$RESET" "$1"; }
+fail() { printf '  %serror%s  %s\n' "$RED$BOLD" "$RESET" "$1" >&2; }
 
 banner() {
     printf '\n%s' "$CYAN"
@@ -45,7 +45,7 @@ banner() {
      \_/\_/     \____/ |____/ |____/ |_____||_____|
 WOBBLE_ART
     printf '%s' "$RESET"
-    printf '  %sTermux -> Wobble -> Projects -> Frameworks -> Build -> Test -> APK/Web%s\n\n' "$DIM" "$RESET"
+    printf '  %sAndroid and web development from Termux%s\n\n' "$DIM" "$RESET"
 }
 
 usage() {

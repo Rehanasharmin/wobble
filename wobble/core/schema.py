@@ -71,6 +71,16 @@ def get_cli_schema() -> Dict[str, Any]:
                 "Use --verbose for tracebacks and exception type diagnostics"
             ]
         },
+        "categories": {
+            "Projects": ["create", "project", "plugin"],
+            "Current project": ["dev", "build", "preview"],
+            "Android": ["android", "apk"],
+            "Web": ["web"],
+            "Packages": ["deps"],
+            "System": ["doctor", "config", "clean"],
+            "Wobble": ["self", "install", "uninstall", "rescue", "update"],
+            "Info": ["about", "schema", "completion", "version", "banner", "help"]
+        },
         "commands": {
             "create": {
                 "description": "Create a new Android or Web project from built-in or plugin templates",

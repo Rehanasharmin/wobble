@@ -273,8 +273,8 @@ def _add_history_check(checks: list, timings: dict) -> None:
         _finding(
             checks, timings, "history.incidents", "Recent failures", status,
             f"{incident_summary['recent']} incident(s), last {incident_summary['last_age']} ago: "
-            f"{(last.get('message') or '')[:90]}",
-            "wob self incidents   # full ledger; 'wob doctor' explains the last failure",
+            f"{(last.get('message') or '')[:60]}",
+            "wob self incidents",
             incident_summary,
         )
     else:
@@ -490,11 +490,11 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         if len(rescue_scripts) < 2:
             snapshot_status = "warning"
             snapshot_detail += " (rescue scripts incomplete)"
-            snapshot_fix = "wob self repair   # rewrite rescue.py / rescue.sh"
+            snapshot_fix = "wob self repair"
     elif snapshot_info["present"]:
         snapshot_status = "warning"
         snapshot_detail = "offline snapshot is damaged"
-        snapshot_fix = "wob self repair --snapshot   # rebuild it from the verified runtime"
+        snapshot_fix = "wob self repair --snapshot"
     else:
         snapshot_status = "warning"
         snapshot_detail = "no offline recovery copy"
@@ -529,14 +529,14 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         launcher_fix = "wob self repair"
     elif not launcher_ours:
         launcher_status, launcher_detail = "warning", f"{primary_launcher} was not written by Wobble"
-        launcher_fix = f"wob self repair   # or remove {primary_launcher} and reinstall"
+        launcher_fix = "wob self repair"
     elif not launcher_exec:
         launcher_status, launcher_detail = "warning", f"{primary_launcher} is not executable"
         launcher_fix = f"chmod 755 {primary_launcher}   (or: wob self repair)"
     elif launcher_target and launcher_target != str(app_dir):
         launcher_status = "critical"
         launcher_detail = f"{primary_launcher} points at {launcher_target}, expected {app_dir}"
-        launcher_fix = "wob self repair   # rewrite the launcher for this app directory"
+        launcher_fix = "wob self repair"
     _finding(
         checks, timings, "launcher.present", "Launcher", launcher_status, launcher_detail,
         launcher_fix,
@@ -830,13 +830,13 @@ def render(report: dict, use_color: bool = True, width: int = 66) -> str:
     overall = "ok" if report.get("ok") else (
         "error" if report.get("status") == "broken" else "warning")
     lines.append(theme.rule("wobble self status", width=width, use_color=use_color))
-    lines.append(f"  {theme.badge(overall, use_color)} {head}")
+    lines.append("  " + theme.check(overall, head, use_color=use_color, label_width=22))
     if report.get("app_dir"):
         home = str(get_home())
         app = report["app_dir"]
         if home and app.startswith(home):
             app = "~" + app[len(home):]
-        lines.append(f"         {paint('app', theme.DIM)} {app}")
+        lines.append(f"     {paint('app', theme.DIM)}  {app}")
 
     groups = {}
     for check in report.get("checks", []):
@@ -845,24 +845,30 @@ def render(report: dict, use_color: bool = True, width: int = 66) -> str:
         groups.setdefault(check["status"], []).append(check)
 
     if not groups:
-        lines.append(f"  {theme.badge('ok', use_color)} "
+        lines.append(f"  {theme.badge('ok', use_color).rstrip()}  "
                      f"all {len(report.get('checks', []))} checks passed")
+    label_width = min(28, max((len(c.get("title", "")) for g in groups.values()
+                               for c in g), default=0) + 2)
     for status in ("critical", "warning", "info"):
         for check in groups.get(status, []):
-            lines.append(f"  {theme.badge(status, use_color)} {check['title']:<24} {check['detail']}")
-            if check.get("fix"):
-                lines.append("        " + paint("fix:", theme.CYAN) + " " + check["fix"])
+            lines.append("  " + theme.check(status, check["title"], check["detail"],
+                                            use_color=use_color, label_width=label_width))
+            # Info rows describe the install mode; a command hint there would
+            # just repeat the detail line.
+            if check.get("fix") and status != "info":
+                lines.append(f"          {paint('fix', theme.DIM)}  {check['fix']}")
 
     counts = report.get("counts", {})
     score = report.get("score", 0)
+    warnings = counts.get("warning", 0)
     summary_rows = [
-        f"{theme.progress_bar(score, width=22, use_color=use_color, invert=True)}  "
-        f"{report.get('status')}",
-        f"{theme.badge('ok', use_color)} passed {counts.get('ok', 0)}   "
-        f"{theme.badge('warning', use_color)} warnings {counts.get('warning', 0)}   "
-        f"{theme.badge('error', use_color)} critical {counts.get('critical', 0)}",
-        f"{paint('scan', theme.DIM)}     {report.get('elapsed_ms')} ms"
-        + ("  (deep)" if report.get("deep") else "  (fast: metadata only)"),
+        f"health  {theme.progress_bar(score, width=20, use_color=use_color, invert=True)}"
+        f"  {report.get('status')}",
+        f"{counts.get('ok', 0)} ok   {warnings} "
+        f"warning{'' if warnings == 1 else 's'}   "
+        f"{counts.get('critical', 0)} critical",
+        paint(f"scan    {report.get('elapsed_ms')} ms"
+              + ("  (deep)" if report.get("deep") else "  (fast)"), theme.DIM),
     ]
     recovery_check = next((c for c in report.get("checks", [])
                            if c["code"] == "recovery.snapshot"), None)
@@ -884,18 +890,11 @@ def render(report: dict, use_color: bool = True, width: int = 66) -> str:
             f"{paint('history', theme.DIM)}  {incidents['total']} incident(s), "
             f"last {incidents.get('last_age')} ago")
     lines.append("")
-    lines.append(theme.box("summary", summary_rows, width=width, use_color=use_color))
-
-    if report.get("next_steps"):
-        lines.append("")
-        lines.append(paint("  next steps:", theme.BOLD, theme.YELLOW))
-        for step in report["next_steps"]:
-            lines.append("    " + theme.list_item(step, use_color=use_color))
+    lines.append(theme.box("Summary", summary_rows, width=width, use_color=use_color))
 
     if report.get("deep") and report.get("status") != "broken":
         lines.append("")
-        lines.append(paint("  deep check: hashes verified, core modules import cleanly.",
-                           theme.DIM))
+        lines.append(paint("  hashes verified; core modules import cleanly.", theme.DIM))
     return "\n".join(lines)
 
 
@@ -1175,7 +1174,7 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
                            "fix": "wob self repair --emergency   (or: wob self repair --accept-current)"})
     if not verification.get("launcher_ok"):
         unresolved.append({"problem": "launcher still invalid",
-                           "fix": "wob self repair   # rewrites launchers carrying the Wobble marker"})
+                           "fix": "wob self repair"})
 
     ok = not failed and not unresolved
     result = {
