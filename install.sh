@@ -57,6 +57,7 @@ usage() {
     printf '  --force           Replace an existing foreign "wob" executable\n'
     printf '  --no-completion   Skip bash/zsh completion files\n'
     printf '  --no-path         Do not edit ~/.bashrc / ~/.zshrc / ~/.profile\n'
+    printf '  --no-snapshot     Skip the offline recovery snapshot (~600 KB)\n'
     printf '  -h, --help        Show this help\n\n'
 }
 
@@ -66,6 +67,7 @@ SOURCE_OVERRIDE=""
 FORCE=0
 COMPLETIONS=1
 UPDATE_PATH=1
+SNAPSHOT=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -75,6 +77,7 @@ while [ $# -gt 0 ]; do
         --force)         FORCE=1; shift ;;
         --no-completion) COMPLETIONS=0; shift ;;
         --no-path)       UPDATE_PATH=0; shift ;;
+        --no-snapshot)   SNAPSHOT=0; shift ;;
         -h|--help)       usage; exit 0 ;;
         *) fail "Unknown option: $1"; usage; exit 2 ;;
     esac
@@ -190,6 +193,7 @@ set -- self install --root "$INSTALL_ROOT" --bin "$BIN_DIR"
 [ "$FORCE" = 1 ] && set -- "$@" --force
 [ "$COMPLETIONS" = 0 ] && set -- "$@" --no-completion
 [ "$UPDATE_PATH" = 0 ] && set -- "$@" --no-path
+[ "$SNAPSHOT" = 0 ] && set -- "$@" --no-snapshot
 
 # The shell script already printed the wordmark, and its final notes replace
 # the Python handler's banner. Keep the rich install summary card.
@@ -224,4 +228,5 @@ printf '  Open a new terminal (or run %ssource ~/.bashrc%s), then:\n\n' "$BOLD" 
 printf '    %swob doctor%s        audit your environment\n' "$BOLD" "$RESET"
 printf '    %swob create web demo%s\n' "$BOLD" "$RESET"
 printf '    %swob self status%s    show install details\n' "$BOLD" "$RESET"
-printf '    %swob uninstall%s      remove Wobble (projects are kept)\n\n' "$BOLD" "$RESET"
+printf '    %swob uninstall%s      remove Wobble (projects are kept)\n' "$BOLD" "$RESET"
+printf '    %swob rescue%s         emergency self-repair if wob ever breaks\n\n' "$BOLD" "$RESET"

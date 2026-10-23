@@ -262,24 +262,32 @@ class TestBreakageDetection(SelfCheckBase):
         self.assertFalse(report["ok"])
         self.assertEqual(report["error_code"], "installation_manifest_invalid")
 
-    def test_repair_runtime_missing_cannot_be_faked(self):
+    def test_repair_rebuilds_a_deleted_runtime_from_the_snapshot(self):
         shutil.rmtree(self.app_dir)
         result = selfcheck.repair(install_root=self.root, bin_dir=self.bin_dir)
-        self.assertFalse(result["success"])
-        self.assertEqual(result["error_code"], "installation_runtime_missing")
-        self.assertIn("wob self install", result["fix"])
+        self.assertTrue(result["success"], result)
+        self.assertEqual(result["restore"]["mode"], "full")
+        self.assertTrue((self.app_dir / "wobble" / "cli.py").is_file())
+        self.assertTrue(installer.verify(self.root)["ok"])
 
-    def test_repair_does_not_hide_modified_files(self):
+    def test_repair_restores_modified_files_without_hiding_the_damage(self):
         target = self.app_dir / "wobble" / "core" / "theme.py"
-        target.write_text(target.read_text() + "\n# local patch\n")
+        patched = target.read_text() + "\n# local patch\n"
+        target.write_text(patched)
         result = selfcheck.repair(install_root=self.root, bin_dir=self.bin_dir)
-        self.assertFalse(result["success"])
-        self.assertTrue(any(item["problem"] == "modified runtime files"
-                            for item in result["unresolved"]))
-        # Explicit opt-in re-baselines the hashes.
+        self.assertTrue(result["success"], result)
+        # The file is restored, not blessed: the local edit is preserved in a
+        # backup and the manifest still describes the pristine runtime.
+        self.assertNotEqual(target.read_text(), patched)
+        self.assertEqual((Path(result["restore"]["backup_dir"]) / "app" / "wobble"
+                          / "core" / "theme.py").read_text(), patched)
+        self.assertTrue(installer.verify(self.root)["ok"])
+        # Explicit opt-in keeps the patch and re-baselines the hashes.
+        target.write_text(patched)
         result = selfcheck.repair(install_root=self.root, bin_dir=self.bin_dir,
                                   accept_current=True)
         self.assertTrue(result["success"], result)
+        self.assertEqual(target.read_text(), patched)
         self.assertEqual(self.inspect(deep=True)["status"], "healthy")
 
 

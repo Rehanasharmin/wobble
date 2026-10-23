@@ -94,7 +94,11 @@ If `wobble.json` is missing in an existing workspace, Wobble infers the project 
 | Check Installation | `wob self status` | `wob self status --json` | Structured checks with stable `code` values, health `score`, `issues`, and `next_steps` |
 | Deep Installation Check | `wob self status --deep` | `wob self status --deep --json` | Adds SHA-256 verification and an import smoke test of core modules |
 | Verify Installation | `wob self verify` | `wob self verify --json` | Hashes installed files; `ok=false` plus `missing`/`modified` on damage |
-| Repair Installation | `wob self repair` | `wob self repair --json` | Fixes launchers, bytecode, completions, install debris, corrupt config; refuses to fake integrity |
+| Repair Installation | `wob self repair` | `wob self repair --json` | Restores missing/corrupted runtime files from the SHA-256-verified snapshot, rebuilds a corrupt manifest, then fixes launchers, bytecode, completions, debris, and config. Damaged files are backed up; integrity is never faked |
+| Preview A Repair | `wob self repair --dry-run` | `wob self repair --dry-run --json` | Returns a `plan` (files, source, backup) without changing anything |
+| Emergency Recovery | `wob self rescue` / `wob rescue` | `wob self rescue --json` | Full restore from any available source (snapshot, source checkout, downloaded release); tolerates version drift |
+| Restore Offline Only | `wob self repair --from snapshot` | `wob self repair --from snapshot --json` | Never falls back to another source; fails with `recovery_source_unavailable` |
+| Rebuild The Snapshot | `wob self repair --snapshot` | `wob self repair --snapshot --json` | Re-snapshots a runtime that was patched on purpose (usually after `--accept-current --yes`) |
 | Watch For Breakage | `wob self watch --interval 2` | `wob --json self watch` | Prints only changes; JSON mode emits one document per line |
 | Read Failure Ledger | `wob self incidents` | `wob self incidents --json` | Recent crashes with counts, timestamps, and messages (`--clear` resets) |
 | List Projects | `wob project list` | `wob project list --json` | Lists registered and scanned projects |
@@ -205,8 +209,10 @@ Common exit statuses: `0` success; `1` operational failure; `2` invalid argument
 | `Cannot execute binary file: Exec format error` | Architecture mismatch | Run `wob doctor --json` to verify machine architecture (`aarch64` vs `arm` vs `x86_64`). |
 | Storage permission denied | Android storage not linked | Advise user to run `termux-setup-storage` in their terminal. |
 | Port 3000 in use | Another dev server is running | Pass `--port 3001` or let Wobble auto-discover an open port. |
-| `wob: installation is damaged` | Installed app files were deleted or modified | Run `wob self status --json` (schedule `--deep` when you need hashes); reinstall with `sh install.sh` or `wob self install`. |
-| `wob self verify` reports `modified`/`missing` | Tampering, interrupted write, or partial copy | Reinstall with `sh install.sh`; do not rely on the damaged runtime. `wob self repair` fixes launchers/bytecode/debris but deliberately refuses to re-hash damaged runtime files. |
+| `wob: installation is damaged` | Installed app files were deleted or modified | The launcher already tried one automatic snapshot restore. If the message persists run `wob self repair --json`; if `wob` cannot start at all, run `wob-rescue` (or `sh ~/.local/share/wobble/rescue.sh`). |
+| `wob self verify` reports `modified`/`missing` | Tampering, interrupted write, or partial copy | Run `wob self repair --json`: it restores only the damaged files from the verified snapshot and preserves the originals in `repair-backups/`. Use `--emergency` when the snapshot is gone, or `--accept-current --yes` when the change was intentional. |
+| `recovery_source_unavailable` | No snapshot, no source checkout, and downloads were not allowed | Re-run `wob self repair --emergency --from network` (or reinstall with `sh install.sh`). Do not fabricate hashes to silence the check. |
+| `wob self status` shows `recovery.snapshot: warning` | The offline safety net is missing or damaged | Run `wob self repair` (rebuilds a missing/damaged snapshot from the now-verified runtime). |
 | `wob self status` shows `launcher.present: critical` | Launcher deleted, stale, or pointing at an old app directory | Run `wob self repair` (rewrites only launchers carrying Wobble's marker). |
 | `wob self status` shows `installer.leftovers` | An install was interrupted | Run `wob self repair` to remove `.app.tmp-*` / `.app.old`. |
 | `wob doctor` reports a regression | A tool disappeared or changed since the last run | Compare the listed check with `previous_run`; re-install the missing package or fix `PATH`. |
@@ -265,7 +271,8 @@ class CustomPlugin(BasePlugin):
 - Always use `pkg` or official Termux package repositories.
 - Keep secrets, tokens, and keystore passwords out of command line arguments and Git commits. `wob apk sign` reads `WOBBLE_KS_PASS` through apksigner's `env:` protocol, so never pass a password as a flag or echo it into logs.
 - Do not bind previews or dev servers to `0.0.0.0`/`--lan` on public networks, and never disable the preview server's dotfile/secret blocking.
-- Treat `wob self status --deep` (or `wob self verify`) as the source of truth for installation health; reinstall rather than patching files inside `~/.local/share/wobble/app` by hand. If a patch is intentional, use `wob self repair --accept-current --yes` so the manifest records it.
-- Never silence a `critical` finding. `wob self repair` fixes mechanical damage (launchers, bytecode, debris, corrupt config); missing or modified runtime files require a reinstall.
+- Treat `wob self status --deep` (or `wob self verify`) as the source of truth for installation health; let `wob self repair` restore files rather than patching `~/.local/share/wobble/app` by hand. If a patch is intentional, use `wob self repair --accept-current --yes` so the manifest *and* the snapshot record it.
+- Never silence a `critical` finding by rewriting hashes. `wob self repair` restores files only from a tree that matches the expected SHA-256 and re-verifies each one afterwards; `--emergency` may download a release archive, so prefer the local snapshot and only opt into the network deliberately.
+- Recovery only touches the install root and never the user's projects. Damaged files are preserved under `repair-backups/` (five most recent runs) — read them before deleting anything if the damage needs root-causing.
 - Read the incident ledger (`wob self incidents --json`) before debugging intermittent failures; crashes are recorded automatically with the command that triggered them.
 - Run `wob --json` commands for machine consumption; the human output is ASCII-styled and intended for terminals.

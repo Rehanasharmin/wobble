@@ -99,10 +99,26 @@ Properties:
   `--deep` adds parallel SHA-256 verification and imports the heavy subcommand
   modules to prove the runtime still loads. Each finding has a stable `code` and
   a machine-readable `status` (`ok` / `info` / `warning` / `critical`).
-- **Honest repair.** `selfcheck.repair()` rewrites launchers, recompiles missing
-  bytecode, regenerates completions, removes install debris, and backs up corrupt
-  config/registry files. It never rewrites manifest hashes unless
-  `--accept-current` is passed explicitly, so damage cannot be hidden.
+- **Repair that repairs.** `selfcheck.repair()` restores missing or corrupted
+  runtime files before it touches anything else. Recovery sources are tried in a
+  fixed ladder — verified offline snapshot, then the recorded source checkout,
+  then (only when explicitly allowed) a release archive pinned to the installed
+  version — and every candidate is version-checked and byte-compiled before use.
+  If the runtime directory itself is gone, the full installer path rebuilds it.
+  Damaged originals are copied to `repair-backups/<timestamp>/`, a corrupt or
+  deleted manifest is regenerated from the files on disk (cross-checked against
+  the snapshot, and excluding files that were never trusted), and the manifest
+  hashes are only rewritten for patched files when `--accept-current` is passed.
+- **Offline snapshot.** `recovery.create_snapshot()` writes
+  `<root>/snapshot/app` plus `snapshot.json` (version, timestamp, per-file
+  SHA-256). Because it lives outside `app/`, it survives the failure it exists
+  for; `wob self status` reports it as `recovery.snapshot`.
+- **Out-of-band rescue.** `recovery.write_rescue_assets()` generates
+  `<root>/rescue.py` (stdlib-only restore with a pure-Python fallback),
+  `<root>/rescue.sh` (POSIX-shell copy fallback for a machine where even Python
+  is unusable) and a `wob-rescue` launcher. The generated `wob` launcher calls
+  the rescue script when `wob.py` is missing or the runtime exits with the
+  dedicated code `121` ("could not be imported"), then retries once.
 - **Health memory.** `health.py` keeps a capped incident ledger
   (`~/.wobble/health/incidents.json`) and a doctor snapshot
   (`~/.wobble/health/doctor-baseline.json`). The bootstrap records unexpected
@@ -120,7 +136,9 @@ Properties:
 
 1. No arguments → render the ASCII landing screen (no argparse).
 2. `--version` / `-V` / `version` (± `--json`) → print and exit.
-3. Anything else → import `wobble.cli` and parse.
+3. Anything else → import `wobble.cli` and parse. A failed import (missing or
+   syntactically broken module) is reported as exit code `121` so the launcher
+   can restore the snapshot and retry once instead of surfacing a traceback.
 
 Consequences:
 

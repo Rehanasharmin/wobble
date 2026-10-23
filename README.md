@@ -14,7 +14,7 @@ Starting with version 1.2.0, Wobble installs like ordinary software rather than 
 |:---|:---|
 | **Original author** | Rehan Ashar Min and [contributors](https://github.com/Rehanasharmin/wobble/graphs/contributors) |
 | **Initial release** | 3 October 2026 |
-| **Stable release** | 1.3.0 (23 October 2026) |
+| **Stable release** | 1.4.0 (23 October 2026) |
 | **Written in** | Python 3, POSIX shell |
 | **Platform** | Termux on Android; mainstream Linux distributions |
 | **Type** | Command-line development harness, build tool, project scaffold |
@@ -22,7 +22,7 @@ Starting with version 1.2.0, Wobble installs like ordinary software rather than 
 | **Repository** | [github.com/Rehanasharmin/wobble](https://github.com/Rehanasharmin/wobble) |
 | **Command name** | `wob` |
 | **Root required** | No |
-| **Size** | ~1 MB installed (≈350 KB source + precompiled bytecode); no third-party Python dependencies |
+| **Size** | ~1.7 MB installed (≈630 KB runtime copy incl. the recovery snapshot + precompiled bytecode); no third-party Python dependencies |
 
 ---
 
@@ -86,6 +86,8 @@ Wobble was created by Rehan Ashar Min in October 2026 to consolidate ad-hoc Term
 
 Version 1.1.0 (17 October 2026) focused on user experience, performance, and stability: command startup was made lazy so trivial commands avoid importing heavyweight modules, environment diagnostics began probing tools concurrently, the web preview server became multi-threaded, configuration and registry files started being written atomically with corruption recovery, shell completion was added, and typo suggestions were introduced across framework, plugin, and configuration names.
 
+Version 1.4.0 (23 October 2026) made self-repair actually repair. Every install now keeps a SHA-256-verified offline snapshot of its runtime (`~/.local/share/wobble/snapshot/`) plus out-of-band rescue assets (`rescue.py`, `rescue.sh`, and a `wob-rescue` launcher) that work even when Python cannot import the damaged package. `wob self repair` restores missing or corrupted runtime files from that snapshot instead of telling the user to reinstall, rebuilds a corrupt or deleted `install.json` from the files on disk, keeps the damaged copies under `repair-backups/`, and escalates through a recovery-source ladder (snapshot → recorded source checkout → an explicitly requested release archive). New `wob self rescue` / `wob rescue` perform emergency recovery, `--dry-run` previews a repair, the generated launcher self-heals once when the runtime fails to load (opt out with `WOBBLE_AUTO_RESCUE=0`, signalled by the new exit code `121`), and `wob self status` gained a `recovery.snapshot` finding so the offline safety net is auditable.
+
 Version 1.3.0 (23 October 2026) turned self-diagnosis into a first-class subsystem. `wob self status` was rebuilt as a fast, structured health engine that inspects manifest integrity, runtime file sizes, bytecode coverage, launcher target, PATH shadowing, completions, config/registry validity, disk space, noexec storage, interrupted-install debris, and the incident ledger in a few milliseconds; `--deep` adds parallel SHA-256 verification and an import smoke test. New `wob self repair` fixes launchers, bytecode, completions, debris, and corrupt config without weakening integrity, `wob self watch` reports breakage live, and `wob self incidents` exposes the crash ledger that the bootstrap now records. `wob doctor` gained a self-invalidating probe cache (tool versions are re-used until the binary changes), regression detection against the previous run with persistent-failure tracking, category filters, section timings, a `Wobble Runtime` category, and CI-friendly `--strict` / `--fail-on` exit codes. Android property reads collapsed from four `getprop` subprocesses into one cached table, and the startup path stopped importing `typing`, `json`, `hashlib`, `socket`, `tempfile`, and `concurrent.futures` unless a command needs them — `wob --version` dropped from 20 ms to 12 ms and `wob doctor --json` from ~119 ms to ~54 ms on the reference sandbox.
 
 Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer with a standalone application installer (copy + manifest + precompiled bytecode + generated launcher), added `wob self status/verify/install/uninstall`, a `--version` fast path that bypasses argument parsing, memoized environment probes, a dependency-free ASCII theme (wordmark, rules, boxes, badges, meters), hardened preview defaults (localhost-only, dotfile/secret blocking, no directory listings, symlink-escape prevention), gzip-compressed preview responses, strict project-name/package validation, trust checks for user plugins, environment-variable keystore passwords, and global flags that work on either side of the subcommand.
@@ -101,7 +103,7 @@ Version 1.2.0 (21 October 2026) replaced the source-dependent symlink installer 
 | **APK tooling** | Locate build outputs automatically; inspect package name, version, min/target SDK, permissions, native ABIs, DEX entries, and SHA-256 using `aapt`/`aapt2` when present or a pure-Python binary-XML fallback when not. Sign with `apksigner`; export to the Android Download folder. |
 | **On-device installation** | `wob apk install` opens the system package installer through `termux-open`, `termux-am`, or `adb`, with `--method` to force a specific transport. |
 | **Standalone install** | `sh install.sh` copies the runtime into `~/.local/share/wobble/app`, writes a manifest with SHA-256 hashes, precompiles bytecode, generates a self-contained `~/.local/bin/wob` launcher, installs bash/zsh completions, and optionally updates `PATH`. The source checkout can be deleted afterwards. |
-| **Self-management** | `wob self status` is a full health report (runtime files, bytecode, launcher target, PATH shadowing, completions, config, disk, incidents) with stable check codes and a health score; `--deep` adds hashing and an import smoke test. `wob self verify` re-hashes every installed file in parallel, `wob self repair` fixes what can be fixed without weakening integrity, `wob self watch` reports breakage live, `wob self incidents` shows the crash ledger, and `wob self uninstall` (or `sh uninstall.sh`) removes Wobble while preserving projects and, unless `--purge` is passed, config. |
+| **Self-management** | `wob self status` is a full health report (runtime files, bytecode, launcher target, PATH shadowing, completions, config, disk, incidents, recovery readiness) with stable check codes and a health score; `--deep` adds hashing and an import smoke test. `wob self verify` re-hashes every installed file in parallel, `wob self repair` restores damaged runtime files from the verified snapshot, rebuilds a corrupt manifest, and keeps the damaged copies; `wob self rescue` is the emergency path for a runtime that will not start; `wob self watch` reports breakage live, `wob self incidents` shows the crash ledger, and `wob self uninstall` (or `sh uninstall.sh`) removes Wobble while preserving projects and, unless `--purge` is passed, config. |
 | **Web projects** | Scaffolds Vite, React, Vue, Svelte, Next.js, Python, PHP, and static sites. Dev servers bind to localhost by default; `--lan` exposes them on the local network. `wob web preview` serves a zero-dependency static server with SPA history fallback. |
 | **Hardened preview** | Dotfiles (`.git`, `.env`), credential files (`*.pem`, `*.jks`, `id_rsa`, `local.properties`), directory listings, path traversal, and symlink escapes are blocked. Responses are gzip-compressed with a small in-memory cache and HTTP/1.1 keep-alive. |
 | **LAN preview** | `wob preview --lan` prints the local and LAN URLs and shows an explicit Wi-Fi exposure warning, enabling cross-device testing without silently exposing project sources on public networks. |
@@ -130,6 +132,7 @@ Wobble is organized as a set of small, single-purpose Python packages. Subcomman
 | `wobble/core/executor.py` | Safe subprocess execution with timeouts, environment injection, and streaming |
 | `wobble/core/doctor.py` | Parallelized, cached environment diagnostics with actionable fixes and regression detection |
 | `wobble/core/selfcheck.py` | Self-health engine: findings, health score, deep verification, and repair orchestration |
+| `wobble/core/recovery.py` | Offline snapshots, the recovery-source ladder, partial/full restore, manifest reconstruction, and the generated rescue scripts |
 | `wobble/core/health.py` | Incident ledger and doctor snapshots (regressions, recoveries, persistent failures) |
 | `wobble/core/probecache.py` | Self-invalidating disk cache for expensive environment probes |
 | `wobble/core/config.py` | Persistent settings in `~/.config/wobble/config.json` with corruption recovery |
@@ -171,6 +174,7 @@ The old workflow symlinked `~/.local/bin/wob` into the checkout, so deleting the
 4. Generates `~/.local/bin/wob` — a standalone POSIX-shell launcher containing the absolute app path. It never references the source checkout.
 5. Installs bash/zsh completion files under `~/.local/share/`.
 6. Appends an idempotent `# >>> wobble >>>` PATH block to `~/.bashrc`, `~/.zshrc`, or `~/.profile` (skip with `--no-path`).
+7. Copies a verified snapshot of the runtime to `snapshot/` and writes out-of-band rescue scripts next to it, so a damaged install can be rebuilt with no network and no source checkout (skip with `--no-snapshot`).
 
 ```
 ~/.local/share/wobble/
@@ -180,8 +184,15 @@ The old workflow symlinked `~/.local/bin/wob` into the checkout, so deleting the
 │   ├── docs/
 │   ├── LICENSE
 │   └── VERSION
+├── snapshot/             # SHA-256-verified offline copy of app/
+│   ├── app/
+│   └── snapshot.json
+├── repair-backups/       # damaged files kept by `wob self repair` (newest 5)
+├── rescue.py             # standalone recovery (stdlib only)
+├── rescue.sh             # recovery even when Python is unusable
 └── install.json          # manifest + SHA-256 hashes
-~/.local/bin/wob          # generated launcher
+~/.local/bin/wob          # generated launcher (self-heals once)
+~/.local/bin/wob-rescue   # emergency entry point
 ```
 
 Installer options:
@@ -194,6 +205,7 @@ Installer options:
 | `--force` | Replace an existing foreign `wob` executable |
 | `--no-completion` | Skip bash/zsh completion files |
 | `--no-path` | Do not edit shell startup files |
+| `--no-snapshot` | Skip the offline recovery snapshot (~600 KB; offline repair becomes impossible) |
 
 ### Verify, upgrade, uninstall
 
@@ -201,12 +213,48 @@ Installer options:
 wob self status          # fast health report (runtime, launcher, PATH, config, history)
 wob self status --deep   # + SHA-256 of every file and an import smoke test
 wob self verify          # parallel SHA-256 check of every installed file
-wob self repair          # fix launchers, bytecode, completions, debris, corrupt config
+wob self repair          # restore damaged runtime files, then fix launchers/bytecode/config
+wob self repair --dry-run   # show exactly what would be restored
+wob rescue               # emergency recovery (same as `wob self rescue`)
 wob self watch           # watch for breakage live (prints only changes)
 wob self incidents       # show the recorded failure ledger (--clear to reset)
 wob self install         # reinstall/upgrade from the current checkout
 wob self uninstall       # remove Wobble, keep projects (--purge removes config too)
 ```
+
+#### Self-healing
+
+A command-line tool is only as good as its worst failure mode. Deleting one
+critical file used to leave `wob` unable to start *and* unable to repair itself.
+Every install now carries its own recovery kit:
+
+| Command / path | What it does |
+|:---|:---|
+| `wob self repair` | Compares the runtime with the manifest and the snapshot, then restores every missing or corrupted file from the verified snapshot. Only damaged files are written; the damaged copies are kept in `repair-backups/<timestamp>/`. |
+| `wob self repair --dry-run` | Prints the restore plan (files, source, backup location) and changes nothing. |
+| `wob self repair --from source` | Restores from the checkout recorded at install time (useful when the snapshot is gone). |
+| `wob self repair --from network [--url URL]` | Downloads a release archive (`codeload.github.com`, tag pinned to the installed version) and restores from it. |
+| `wob self repair --emergency` | Full recovery: any source, downloads allowed, version drift accepted. Used when the runtime directory itself is gone. |
+| `wob self repair --snapshot` | Rebuilds the offline snapshot from the current runtime (after a deliberate local patch). |
+| `wob self rescue` / `wob rescue` | Emergency mode with a clear banner: always attempts a restore, allows downloads, and reports honestly when nothing is available. |
+| `wob-rescue` / `sh ~/.local/share/wobble/rescue.sh` | Works without a functioning `wob`: uses the package when it can be imported, otherwise falls back to a pure-stdlib (and finally pure-POSIX-shell) snapshot restore. |
+| Automatic launcher recovery | If the runtime fails to import (exit code `121`) or `wob.py` is missing, the launcher restores the snapshot and retries the command exactly once. Disable with `WOBBLE_AUTO_RESCUE=0`. |
+
+Repair is careful by construction:
+
+- **Nothing is blessed blindly.** A file is only written from a tree whose SHA-256
+  matches what the install expects; each restored file is re-hashed afterwards.
+  `--accept-current` remains the explicit opt-in for "my local patch is the truth".
+- **The manifest is never a single point of failure.** A corrupt or deleted
+  `install.json` is preserved (`.corrupt.bak`) and rebuilt from the files on disk,
+  cross-checked against the snapshot; files that were never part of a trusted tree
+  are left out of the rebuilt manifest so they still show up as unexpected.
+- **Version drift is refused** by default: a recovery source must match the
+  installed version, which is why the download ladder prefers the release tag.
+- **Bounded and reversible.** Backups keep the five most recent repair runs, the
+  download size is capped at 32 MB, archive extraction rejects absolute paths,
+  `..` components, symlinks, and oversized entries, and nothing outside the
+  install root (or the user's projects) is ever touched.
 
 `wob self status` exits `0` when the installation is healthy or merely degraded,
 and `1` when it is broken (add `--strict` to fail on warnings too). Every finding
@@ -301,7 +349,9 @@ The server is threaded, uses HTTP/1.1 keep-alive, gzip-compresses text assets wi
 | `wob config list / get / set` | Persistent user configuration |
 | `wob self status [--deep] [--brief] [--strict]` | Fast health report; `--deep` hashes files and smoke-tests imports |
 | `wob self verify [--serial]` | Parallel SHA-256 verification against the install manifest |
-| `wob self repair [--path] [--accept-current]` | Fix launchers, bytecode, completions, debris, and corrupt config |
+| `wob self repair [--dry-run] [--from src] [--network] [--emergency] [--snapshot]` | Restore damaged runtime files from the verified snapshot, rebuild a corrupt manifest, fix launchers/bytecode/config |
+| `wob self repair --accept-current [--yes]` | Keep a deliberate local patch and re-baseline the manifest and snapshot |
+| `wob self rescue` / `wob rescue` | Emergency recovery for a runtime that will not start |
 | `wob self watch [--interval s] [--count n]` | Continuously watch installation health; prints only changes |
 | `wob self incidents [--limit n] [--clear]` | Show or clear the recorded failure ledger |
 | `wob self install / uninstall` | Install or remove the standalone runtime |
@@ -365,7 +415,9 @@ Additional optimizations:
 - **Defensive project state.** Stale registry entries are pruned in a batched write, malformed entries are ignored, and a malformed `wobble.json` produces an explicit repair error instead of being misreported as “no project found.”
 - **Honest partial completion.** Cleanup reports every path it could not remove and exits non-zero. Project creation can succeed with an explicit registry warning rather than falsely reporting that scaffolding failed.
 - **Health memory.** Unexpected failures are recorded in a capped ledger (`~/.wobble/health/incidents.json`), so a crash is still visible in `wob self status` on the next day instead of vanishing into terminal scrollback. `wob doctor` stores each run's check statuses and reports what regressed, what recovered, and what has been failing for days.
-- **Honest repair.** `wob self repair` rewrites launchers, recompiles bytecode, removes install debris, and backs up corrupt config, but it never fabricates a passing integrity check: missing or modified runtime files are reported as unresolved with a reinstall instruction unless `--accept-current` is passed explicitly.
+- **Self-healing with evidence.** `wob self repair` restores missing or corrupted runtime files from a SHA-256-verified offline snapshot, rebuilds a corrupt or deleted manifest from the files on disk, rewrites launchers and bytecode, and backs up corrupt config. It never fabricates a passing integrity check: files are only restored from a tree that matches the expected hashes, each restored file is verified again afterwards, the damaged originals are preserved under `repair-backups/`, and `--accept-current` stays the explicit opt-in for treating a local patch as the new truth.
+- **Recovery that survives the failure it targets.** The snapshot and the rescue scripts live outside the runtime, so a runtime that cannot be imported can still be restored: `wob-rescue` tries the Python module, then a pure-stdlib restore, then a POSIX-shell copy, and reports honestly when no source is available.
+- **No surprise traffic.** `wob self repair` never touches the network unless `--network`, `--from network`, or `--emergency` is requested; a launcher-triggered recovery only uses the local snapshot.
 - **Strict input validation.** Project names must match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`, Android package IDs must be reverse-DNS identifiers, and TCP ports must be in `1..65535`. Scaffolding into a symlink is refused.
 
 ### Error output and exit codes
@@ -390,6 +442,7 @@ Human errors include a concise cause and, when known, a `Hint:` with the next re
 | `2` | Invalid CLI arguments or configuration value |
 | `124` | External command timeout, when propagated by the command |
 | `126` | Executable permission failure, when propagated |
+| `121` | The installed runtime could not be loaded (the launcher attempts one automatic snapshot restore before propagating it) |
 | `127` | Required executable not found, when propagated |
 | `130` | Interrupted by `Ctrl+C` |
 

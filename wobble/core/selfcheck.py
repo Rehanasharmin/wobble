@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from wobble import __version__
-from wobble.core import health, installer
+from wobble.core import health, installer, recovery
 from wobble.core.context import (
     get_home,
     get_mount_info,
@@ -417,7 +417,8 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         detail = f"{len(resized)} of {len(files)} files changed size"
     _finding(
         checks, timings, "runtime.files", "Runtime files", runtime_status, detail,
-        None if runtime_status == "ok" else "wob self repair   (or reinstall: wob self install)",
+        None if runtime_status == "ok" else (
+            "wob self repair   # restores the damaged files from the verified snapshot"),
         {
             "app_dir": str(app_dir),
             "checked": checked,
@@ -473,6 +474,45 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         "readable and traversable" if readable else "not readable by this user",
         None if readable else f"chmod -R u+rwX {app_dir}",
         {"app_dir": str(app_dir)},
+    )
+
+    # -- recovery readiness ------------------------------------------
+    snapshot_info = recovery.describe_snapshot(root)
+    rescue_scripts = [path for path in (recovery.rescue_py_path(root),
+                                        recovery.rescue_sh_path(root)) if path.is_file()]
+    snapshot_status = "ok"
+    snapshot_detail = ""
+    snapshot_fix = None
+    if snapshot_info["valid"] and snapshot_info["exists_on_disk"]:
+        snapshot_detail = (f"v{snapshot_info['version']}, "
+                           f"{snapshot_info['file_count']} files, "
+                           f"created {snapshot_info['created_at']}")
+        if len(rescue_scripts) < 2:
+            snapshot_status = "warning"
+            snapshot_detail += " (rescue scripts incomplete)"
+            snapshot_fix = "wob self repair   # rewrite rescue.py / rescue.sh"
+    elif snapshot_info["present"]:
+        snapshot_status = "warning"
+        snapshot_detail = "offline snapshot is damaged"
+        snapshot_fix = "wob self repair --snapshot   # rebuild it from the verified runtime"
+    else:
+        snapshot_status = "warning"
+        snapshot_detail = "no offline recovery copy"
+        snapshot_fix = "wob self repair --snapshot"
+    if runtime_status == "critical" and not (snapshot_info["valid"]
+                                             and snapshot_info["exists_on_disk"]):
+        snapshot_detail += "; run 'wob self repair --emergency' to fetch a release archive"
+    readiness = recovery.recovery_readiness(root, manifest)
+    _finding(
+        checks, timings, "recovery.snapshot", "Recovery snapshot", snapshot_status,
+        snapshot_detail, snapshot_fix,
+        {
+            **snapshot_info,
+            "rescue_scripts": [str(p) for p in rescue_scripts],
+            "rescue_command": recovery.rescue_command(root),
+            "offline_ready": readiness["offline_ready"],
+            "source_checkout": readiness["source_checkout"],
+        },
     )
 
     # -- launcher ----------------------------------------------------
@@ -616,7 +656,8 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
                  None, {"mount": mount})
 
     # Interrupted-install leftovers
-    leftovers = [str(p) for pattern in (".app.tmp-*", ".app.old")
+    leftovers = [str(p) for pattern in (".app.tmp-*", ".app.old",
+                                        ".snapshot.tmp-*", ".snapshot.old")
                  for p in root.glob(pattern)]
     _finding(
         checks, timings, "installer.leftovers", "Interrupted install debris",
@@ -645,7 +686,8 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         _finding(
             checks, timings, "integrity.hashes", "File integrity (SHA-256)", verify_status,
             detail,
-            None if verify_status == "ok" else "wob self install   # reinstall a verified runtime",
+            None if verify_status == "ok" else (
+                "wob self repair   # restore the damaged files from the snapshot"),
             {k: verification.get(k) for k in
              ("checked", "file_count", "missing", "modified", "unreadable",
               "launcher_ok", "elapsed_ms", "hashed_bytes")},
@@ -660,7 +702,8 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
             f"{smoke['loaded']}/{smoke['total']} core modules import cleanly"
             if smoke["ok"] else
             "failed: " + ", ".join(item["module"] for item in smoke["failed"]),
-            None if smoke["ok"] else "wob self install   # corrupt bytecode or source; reinstall",
+            None if smoke["ok"] else (
+                "wob self repair --emergency   # restore the runtime, then re-verify"),
             smoke,
         )
         timings["runtime.imports"] = round((time.monotonic() - t0) * 1000, 2)
@@ -819,6 +862,20 @@ def render(report: dict, use_color: bool = True, width: int = 66) -> str:
         f"{paint('scan', theme.DIM)}     {report.get('elapsed_ms')} ms"
         + ("  (deep)" if report.get("deep") else "  (fast: metadata only)"),
     ]
+    recovery_check = next((c for c in report.get("checks", [])
+                           if c["code"] == "recovery.snapshot"), None)
+    if recovery_check and report.get("mode") == "standalone":
+        data = recovery_check.get("data") or {}
+        if recovery_check["status"] == "ok":
+            summary_rows.append(
+                f"{paint('recovery', theme.DIM)}  snapshot v{data.get('version')}, "
+                f"{data.get('file_count', 0)} files  "
+                f"{paint('(offline repair ready)', theme.GREEN)}")
+        else:
+            summary_rows.append(
+                f"{paint('recovery', theme.DIM)}  "
+                f"{paint('no offline snapshot', theme.YELLOW)}  "
+                f"{paint('wob self repair --snapshot', theme.DIM)}")
     if report.get("incidents", {}).get("total"):
         incidents = report["incidents"]
         summary_rows.append(
@@ -845,47 +902,156 @@ def render(report: dict, use_color: bool = True, width: int = 66) -> str:
 # ---------------------------------------------------------------------------
 def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bool = True,
            completions: bool = True, update_path: bool = False,
-           fix_config: bool = True, accept_current: bool = False) -> dict:
-    """Fix everything that can be fixed without weakening integrity.
+           fix_config: bool = True, accept_current: bool = False,
+           restore: bool = True, source: str = "auto", network: bool = False,
+           url: str = None, dry_run: bool = False, emergency: bool = False,
+           refresh_snapshot: bool = False, backup: bool = True) -> dict:
+    """Heal the installation: rebuild damaged files, then fix everything else.
 
-    Missing or modified *runtime* files are never papered over: the honest fix
-    for a damaged runtime is a reinstall, and this function says so instead of
-    silently rewriting hashes. ``accept_current=True`` is the explicit opt-in for
-    "I patched my install on purpose, re-baseline it".
+    The important change over the old "honest but helpless" repair is step 2:
+    missing or corrupted *runtime* files are restored from the verified offline
+    snapshot (or the source checkout, or an explicitly requested download)
+    instead of being reported as unfixable. Integrity is still never faked —
+    files are only written from a tree whose hashes match what the install
+    expects, the damaged copies are kept under ``repair-backups/``, and the
+    manifest is rebuilt from what actually landed on disk.
+
+    ``accept_current=True`` remains the explicit "my local patch is the new
+    truth" opt-in and re-baselines both the manifest and the snapshot.
+    ``emergency=True`` additionally allows downloading a release archive and
+    tolerates a version change when nothing else is available.
     """
     started = time.monotonic()
     root = Path(install_root).expanduser().resolve() if install_root else installer.default_install_root()
     bin_path = Path(bin_dir).expanduser().resolve() if bin_dir else installer.default_bin_dir()
+    if emergency:
+        restore = True
+        network = True
+    if url:
+        # An explicit archive URL is an explicit request for a download.
+        network = True
+
+    manifest_file = installer.manifest_path(root)
     manifest = installer.read_manifest(root)
-    actions, failed, skipped = [], [], []
+    manifest_corrupt = bool(manifest_file.is_file() and not manifest)
+    snapshot_info = recovery.describe_snapshot(root)
+    app_dir, app_dir_warning = recovery.resolve_app_dir(root, manifest)
 
-    if not manifest:
-        return {
-            "success": False,
-            "error": "No install manifest found; there is nothing to repair.",
-            "error_code": "installation_manifest_missing",
-            "fix": "wob self install   (or: sh install.sh)",
-            "install_root": str(root),
-            "actions": [],
-            "failed": [],
-            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-        }
+    actions, failed, skipped, warnings = [], [], [], []
+    if app_dir_warning:
+        warnings.append({"action": "resolve_app_dir", "warning": app_dir_warning})
+    elapsed = lambda: round((time.monotonic() - started) * 1000, 1)  # noqa: E731
 
-    app_dir = Path(manifest.get("app_dir", root / installer.APP_DIRNAME))
-    if not app_dir.is_dir() or not (app_dir / "wob.py").is_file():
-        return {
-            "success": False,
-            "error": "The installed runtime is missing; only a reinstall can restore it.",
-            "error_code": "installation_runtime_missing",
-            "fix": "wob self install   (or: sh install.sh)",
-            "install_root": str(root),
-            "app_dir": str(app_dir),
-            "actions": [],
-            "failed": [str(app_dir)],
-            "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
-        }
+    if not manifest and not manifest_file.exists():
+        if not recovery.runtime_present(app_dir) and not snapshot_info["exists_on_disk"]:
+            health.record_incident("repair", "no manifest, runtime, or recovery snapshot")
+            return {
+                "success": False,
+                "error": "No install manifest, runtime, or recovery snapshot was found; "
+                         "there is nothing to repair in place.",
+                "error_code": "installation_manifest_missing",
+                "fix": f"reinstall: sh install.sh   (or: {recovery.rescue_command(root)})",
+                "install_root": str(root),
+                "app_dir": str(app_dir),
+                "actions": [], "failed": [], "skipped": [], "warnings": [],
+                "unresolved": [], "dry_run": dry_run, "snapshot": snapshot_info,
+                "elapsed_ms": elapsed(),
+            }
 
-    # 1. Interrupted-install debris
+    # 1. Preserve a corrupt manifest before anything rewrites it.
+    if manifest_corrupt:
+        try:
+            corrupt_backup = backup_corrupted_file(manifest_file)
+            actions.append({"action": "backup_corrupt_manifest",
+                            "path": str(manifest_file), "backup": str(corrupt_backup)})
+        except OSError as exc:
+            failed.append({"action": "backup_corrupt_manifest", "error": str(exc)})
+
+    # 2. Restore the runtime itself (the part that used to be impossible).
+    restore_result = None
+    if restore and not accept_current:
+        restore_result = recovery.restore_runtime(
+            root, manifest=manifest, app_dir=app_dir, bin_dir=bin_path,
+            prefer=source, dry_run=dry_run, backup=backup,
+            network=network, url=url, allow_version_drift=emergency,
+        )
+        if dry_run:
+            if restore_result.get("error"):
+                failed.append({"action": "restore_runtime",
+                               "error": restore_result["error"],
+                               "error_code": restore_result.get("error_code")})
+            return {
+                "success": not failed,
+                "repaired": False,
+                "dry_run": True,
+                "install_root": str(root),
+                "app_dir": str(app_dir),
+                "actions": actions,
+                "restore": restore_result,
+                "plan": (restore_result or {}).get("plan"),
+                "failed": failed,
+                "skipped": skipped,
+                "warnings": warnings,
+                "unresolved": [],
+                "snapshot": recovery.describe_snapshot(root),
+                "elapsed_ms": elapsed(),
+            }
+        if restore_result.get("mode") not in (None, "none"):
+            actions.append({
+                "action": "restore_runtime",
+                "mode": restore_result.get("mode"),
+                "restored": restore_result.get("restored", []),
+                "missing": restore_result.get("missing", []),
+                "modified": restore_result.get("modified", []),
+                "source": restore_result.get("source"),
+                "backup_dir": restore_result.get("backup_dir"),
+                "manifest_rebuilt": restore_result.get("manifest_rebuilt"),
+            })
+        if restore_result.get("error"):
+            failed.append({"action": "restore_runtime",
+                           "error": restore_result["error"],
+                           "error_code": restore_result.get("error_code")})
+        if restore_result.get("warnings"):
+            warnings.extend({"action": "restore_runtime", "warning": item}
+                            for item in restore_result["warnings"])
+        manifest = installer.read_manifest(root) or manifest
+        if manifest and manifest.get("app_dir"):
+            app_dir = Path(manifest["app_dir"])
+
+    # 3. A missing or corrupt manifest is rebuildable from the runtime on disk,
+    #    cross-checked against the snapshot when one is available.
+    if not installer.read_manifest(root):
+        snapshot_manifest, _snap_error = recovery.read_snapshot_manifest(root)
+        rebuilt = recovery.rebuild_manifest(
+            root, app_dir=app_dir, manifest=manifest,
+            version=(manifest or {}).get("version") or snapshot_info.get("version"),
+            trusted=recovery.expected_files(None, snapshot_manifest),
+            note="wob self repair: manifest rebuilt from the installed runtime",
+        )
+        if rebuilt.get("ok"):
+            actions.append({"action": "rebuild_manifest", **rebuilt})
+            if rebuilt.get("unverified_count"):
+                warnings.append({
+                    "action": "rebuild_manifest",
+                    "warning": f"{rebuilt['unverified_count']} file(s) could not be "
+                               "verified against a trusted hash",
+                })
+            if rebuilt.get("unexpected_count"):
+                warnings.append({
+                    "action": "rebuild_manifest",
+                    "warning": f"{rebuilt['unexpected_count']} unexpected file(s) were "
+                               "left out of the manifest",
+                })
+            manifest = installer.read_manifest(root) or manifest
+        else:
+            failed.append({"action": "rebuild_manifest",
+                           "error": rebuilt.get("error"),
+                           "error_code": rebuilt.get("error_code")})
+    manifest = installer.read_manifest(root) or manifest
+    if manifest and manifest.get("app_dir"):
+        app_dir = Path(manifest["app_dir"])
+
+    # 4. Interrupted-install debris
     try:
         removed = installer.cleanup_leftovers(root)
         if removed:
@@ -893,12 +1059,12 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
     except OSError as exc:
         failed.append({"action": "cleanup_leftovers", "error": str(exc)})
 
-    # 2. Launchers (missing, stale target, wrong permissions)
+    # 5. Launchers (missing, stale target, wrong permissions)
     try:
         launcher_result = installer.rewrite_launchers(
             app_dir,
             bin_dir=bin_path,
-            launchers=manifest.get("launchers") or [],
+            launchers=(manifest or {}).get("launchers") or [],
         )
         if launcher_result["written"]:
             actions.append({"action": "rewrite_launchers", **launcher_result})
@@ -908,7 +1074,7 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
     except OSError as exc:
         failed.append({"action": "rewrite_launchers", "error": str(exc)})
 
-    # 3. Bytecode cache
+    # 6. Bytecode cache
     if compile_bytecode:
         missing, _total = _pyc_coverage(app_dir)
         if missing:
@@ -917,7 +1083,7 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
             if not result["ok"]:
                 failed.append({"action": "compile_bytecode", "error": "no bytecode produced"})
 
-    # 4. Completions
+    # 7. Completions
     if completions:
         try:
             written = installer.install_completions(root)
@@ -926,20 +1092,20 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
         except OSError as exc:
             failed.append({"action": "install_completions", "error": str(exc)})
 
-    # 5. Corrupt config / registry (backup first, never overwrite blindly)
+    # 8. Corrupt config / registry (backup first, never overwrite blindly)
     if fix_config:
         for label, path in (("config", config_path()), ("registry", registry_path())):
             _data, error = _read_json(path)
             if not error:
                 continue
             try:
-                backup = backup_corrupted_file(path)
+                config_backup = backup_corrupted_file(path)
                 actions.append({"action": f"backup_corrupt_{label}",
-                                "path": str(path), "backup": str(backup)})
+                                "path": str(path), "backup": str(config_backup)})
             except OSError as exc:
                 failed.append({"action": f"backup_corrupt_{label}", "error": str(exc)})
 
-    # 6. PATH
+    # 9. PATH
     if update_path:
         try:
             touched = installer.update_shell_path(bin_path)
@@ -947,35 +1113,101 @@ def repair(install_root: Path = None, bin_dir: Path = None, compile_bytecode: bo
         except OSError as exc:
             failed.append({"action": "update_shell_path", "error": str(exc)})
 
-    # 7. Explicit re-baseline after a deliberate local patch
+    # 10. Explicit re-baseline after a deliberate local patch
     if accept_current:
         try:
             refreshed = installer.refresh_manifest(root)
             actions.append({"action": "refresh_manifest", **refreshed})
+            manifest = installer.read_manifest(root) or manifest
         except Exception as exc:  # InstallerError or OSError
             failed.append({"action": "refresh_manifest", "error": str(exc)})
 
+    # 11. Recovery snapshot + out-of-band rescue scripts. A snapshot that exists
+    #     but no longer hashes clean is just as useless as a missing one, so it
+    #     is verified rather than trusted by its manifest's presence alone.
+    snapshot_info = recovery.describe_snapshot(root)
+    snapshot_usable = bool(
+        snapshot_info["valid"] and snapshot_info["exists_on_disk"]
+        and recovery.verify_snapshot(root, deep=True).get("ok")
+    )
+    needs_assets = not (recovery.rescue_py_path(root).is_file()
+                        and recovery.rescue_sh_path(root).is_file())
+    if refresh_snapshot or accept_current or not snapshot_usable:
+        if manifest:
+            try:
+                snap = recovery.create_snapshot(
+                    root, app_dir=app_dir,
+                    version=manifest.get("version") or snapshot_info.get("version"),
+                    trusted_files=None if accept_current else manifest.get("files"),
+                    force=accept_current, source="repair",
+                )
+                actions.append({"action": "create_snapshot", **snap})
+                snapshot_info = recovery.describe_snapshot(root)
+            except (recovery.RecoveryError, OSError) as exc:
+                warnings.append({"action": "create_snapshot", "error": str(exc)})
+    if needs_assets or refresh_snapshot or accept_current:
+        try:
+            assets = recovery.write_rescue_assets(root, bin_dir=bin_path)
+            actions.append({"action": "write_rescue_assets",
+                            "rescue_py": assets.get("rescue_py"),
+                            "rescue_sh": assets.get("rescue_sh"),
+                            "launchers": assets.get("launchers", [])})
+        except OSError as exc:
+            warnings.append({"action": "write_rescue_assets", "error": str(exc)})
+
+    pruned = recovery.prune_backups(root)
+    if pruned:
+        actions.append({"action": "prune_backups", "removed": pruned})
+
+    # 12. Final verification
     verification = installer.verify(root)
     unresolved = []
+    if verification.get("error"):
+        unresolved.append({"problem": verification["error"],
+                           "fix": "wob self repair --emergency   (or: sh install.sh)"})
     if verification.get("missing"):
         unresolved.append({"problem": "missing runtime files", "files": verification["missing"][:20],
-                           "fix": "wob self install"})
+                           "fix": "wob self repair --emergency   (or: sh install.sh)"})
     if verification.get("modified"):
         unresolved.append({"problem": "modified runtime files", "files": verification["modified"][:20],
-                           "fix": "wob self install   (or: wob self repair --accept-current)"})
+                           "fix": "wob self repair --emergency   (or: wob self repair --accept-current)"})
     if not verification.get("launcher_ok"):
-        unresolved.append({"problem": "launcher still invalid", "fix": "wob self install --force"})
+        unresolved.append({"problem": "launcher still invalid",
+                           "fix": "wob self repair   # rewrites launchers carrying the Wobble marker"})
 
     ok = not failed and not unresolved
-    return {
+    result = {
         "success": ok,
         "repaired": bool(actions),
+        "dry_run": False,
+        "emergency": bool(emergency),
         "install_root": str(root),
         "app_dir": str(app_dir),
         "actions": actions,
         "failed": failed,
         "skipped": skipped,
+        "warnings": warnings,
         "unresolved": unresolved,
         "verification": verification,
-        "elapsed_ms": round((time.monotonic() - started) * 1000, 1),
+        "restore": restore_result,
+        "snapshot": recovery.describe_snapshot(root),
+        "elapsed_ms": elapsed(),
     }
+    if not ok:
+        # Same failure contract as every other command: a false `success`
+        # always carries an actionable `error` and a stable `error_code`.
+        if failed:
+            first = failed[0]
+            result["error"] = first.get("error") or "repair failed"
+            result["error_code"] = first.get("error_code") or "repair_failed"
+        else:
+            result["error"] = unresolved[0].get("problem", "repair incomplete")
+            result["error_code"] = "repair_incomplete"
+        if unresolved:
+            result["hint"] = unresolved[0].get("fix")
+        elif failed:
+            result["hint"] = "wob self repair --emergency   (or: sh install.sh)"
+        health.record_incident(
+            "repair", result["error"], {"root": str(root), "actions": len(actions)}
+        )
+    return result

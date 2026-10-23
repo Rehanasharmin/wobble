@@ -113,20 +113,26 @@ remove_launcher() {
 }
 
 remove_launcher "$BIN_DIR/wob"
+remove_launcher "$BIN_DIR/wob-rescue"
 if [ -n "${PREFIX:-}" ] && [ "$PREFIX/bin/wob" != "$BIN_DIR/wob" ]; then
     remove_launcher "$PREFIX/bin/wob"
+    remove_launcher "$PREFIX/bin/wob-rescue"
 fi
 
 # App runtime and manifest (never recursively delete the whole root: it may
 # contain files the user put there). Only touch it when it is recognisably a
 # Wobble installation, so a mistyped --root cannot delete unrelated files.
 if [ -f "$INSTALL_ROOT/app/wob.py" ] || [ -f "$INSTALL_ROOT/install.json" ]; then
-    for ITEM in "$INSTALL_ROOT/app" "$INSTALL_ROOT/.app.old" "$INSTALL_ROOT/install.json"; do
+    for ITEM in "$INSTALL_ROOT/app" "$INSTALL_ROOT/.app.old" \
+                "$INSTALL_ROOT/snapshot" "$INSTALL_ROOT/.snapshot.old" \
+                "$INSTALL_ROOT/repair-backups" \
+                "$INSTALL_ROOT/rescue.py" "$INSTALL_ROOT/rescue.sh" \
+                "$INSTALL_ROOT/install.json"; do
         if [ -e "$ITEM" ]; then
             rm -rf "$ITEM" && ok "removed $ITEM" && REMOVED=1
         fi
     done
-    for ITEM in "$INSTALL_ROOT"/.app.tmp-*; do
+    for ITEM in "$INSTALL_ROOT"/.app.tmp-* "$INSTALL_ROOT"/.snapshot.tmp-*; do
         [ -e "$ITEM" ] || continue
         rm -rf "$ITEM" && REMOVED=1
     done
