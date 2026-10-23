@@ -14,6 +14,7 @@ import io
 import os
 import socket
 import socketserver
+import stat
 import sys
 import threading
 import urllib.parse
@@ -52,10 +53,13 @@ _GZIP_TYPES = (
 )
 
 # Small compressed-response cache shared by all worker threads.
-_GZIP_CACHE: "OrderedDict[str, Tuple[int, int, bytes]]" = OrderedDict()
+_GZIP_CACHE: "OrderedDict[str, Tuple[Tuple[int, int, int, int, int], bytes]]" = OrderedDict()
 _GZIP_CACHE_LOCK = threading.Lock()
 _GZIP_CACHE_MAX_ENTRIES = 64
 _GZIP_CACHE_MAX_BYTES = 8 * 1024 * 1024
+# Avoid reading/compressing arbitrarily large project artifacts into RAM for a
+# single preview request. Larger assets are served uncompressed instead.
+_GZIP_MAX_INPUT_BYTES = 2 * 1024 * 1024
 
 
 def find_free_port(start_port: int = 3000, max_attempts: int = 50) -> Optional[int]:
@@ -106,38 +110,146 @@ def _is_blocked(url_path: str) -> bool:
     return False
 
 
-def _gzip_payload(path: Path, stat_result: os.stat_result) -> Optional[bytes]:
-    """Return cached gzip bytes for *path*, or None when not worth compressing."""
+def _file_stamp(stat_result: os.stat_result) -> Tuple[int, int, int, int, int]:
+    """Identify a file version, including replacements with preserved mtime/size."""
+    return (int(stat_result.st_mtime_ns), int(stat_result.st_size),
+            int(stat_result.st_ctime_ns), int(stat_result.st_dev), int(stat_result.st_ino))
+
+
+def _read_compression_source(handle, opened_stat: os.stat_result, stamp) -> Optional[bytes]:
+    """Read a bounded, unchanged file descriptor for gzip compression."""
+    if opened_stat.st_size > _GZIP_MAX_INPUT_BYTES or _file_stamp(opened_stat) != stamp:
+        return None
+    handle.seek(0)
+    raw = handle.read(_GZIP_MAX_INPUT_BYTES + 1)
+    # The handler may fall back to sending this same descriptor uncompressed.
+    handle.seek(0)
+    if len(raw) > _GZIP_MAX_INPUT_BYTES or len(raw) != stamp[1]:
+        return None
+    # Do not cache a potentially mixed snapshot if another process rewrote the
+    # file while it was being read.
+    if _file_stamp(os.fstat(handle.fileno())) != stamp:
+        return None
+    return raw
+
+
+def _gzip_payload(path: Path, stat_result: os.stat_result, source=None) -> Optional[bytes]:
+    """Return cached gzip bytes for *path*, or None when not worth compressing.
+
+    Compression is deliberately limited to small files: previewing a project
+    should not require buffering a multi-gigabyte bundle in memory.
+    """
     key = str(path)
-    stamp = (int(stat_result.st_mtime_ns), int(stat_result.st_size))
+    stamp = _file_stamp(stat_result)
+    if stat_result.st_size > _GZIP_MAX_INPUT_BYTES:
+        return None
+
     with _GZIP_CACHE_LOCK:
         hit = _GZIP_CACHE.get(key)
-        if hit and hit[0] == stamp[0] and hit[1] == stamp[1]:
+        if hit and hit[0] == stamp:
             _GZIP_CACHE.move_to_end(key)
-            return hit[2]
+            return hit[1]
 
     try:
-        with open(path, "rb") as handle:
-            raw = handle.read()
+        if source is None:
+            with open(path, "rb") as handle:
+                opened_stat = os.fstat(handle.fileno())
+                raw = _read_compression_source(handle, opened_stat, stamp)
+        else:
+            # Reuse the descriptor already opened for this response. Reopening
+            # the path here would create a symlink-swap window after containment
+            # validation and could read outside the preview root.
+            opened_stat = os.fstat(source.fileno())
+            raw = _read_compression_source(source, opened_stat, stamp)
     except OSError:
         return None
+    if raw is None:
+        return None
+
     compressed = gzip.compress(raw, compresslevel=5, mtime=0)
     if len(compressed) >= len(raw) * 0.95:
         return None
 
     with _GZIP_CACHE_LOCK:
-        _GZIP_CACHE[key] = (stamp[0], stamp[1], compressed)
+        _GZIP_CACHE[key] = (stamp, compressed)
         _GZIP_CACHE.move_to_end(key)
-        total = sum(len(entry[2]) for entry in _GZIP_CACHE.values())
+        total = sum(len(entry[1]) for entry in _GZIP_CACHE.values())
         while len(_GZIP_CACHE) > _GZIP_CACHE_MAX_ENTRIES or total > _GZIP_CACHE_MAX_BYTES:
             _, evicted = _GZIP_CACHE.popitem(last=False)
-            total -= len(evicted[2])
+            total -= len(evicted[1])
     return compressed
 
 
+def _open_contained_file(root_fd: int, root: Path, target: Path):
+    """Open a regular file beneath an already-open root without following links.
+
+    The request path is resolved before this call, but path-based validation
+    followed by ``open(path)`` leaves a symlink-swap window. Walking each path
+    component relative to the pinned root descriptor closes that window.
+    """
+    try:
+        relative = target.relative_to(root)
+    except ValueError:
+        return None
+    parts = relative.parts
+    if not parts or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        return None
+
+    current_fd = None
+    file_fd = None
+    try:
+        current_fd = os.dup(root_fd)
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=current_fd,
+            )
+            os.close(current_fd)
+            current_fd = next_fd
+        file_fd = os.open(
+            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=current_fd,
+        )
+        if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+            os.close(file_fd)
+            file_fd = None
+            return None
+        return os.fdopen(file_fd, "rb")
+    except (OSError, TypeError, ValueError):
+        if file_fd is not None:
+            os.close(file_fd)
+        return None
+    finally:
+        if current_fd is not None:
+            os.close(current_fd)
+
+
 def _accepted(request_headers, encoding: str) -> bool:
-    value = request_headers.get("Accept-Encoding", "")
-    return encoding in value.lower()
+    """Parse Accept-Encoding tokens and quality weights (including q=0)."""
+    accepted_quality = None
+    wildcard_quality = None
+    for item in request_headers.get("Accept-Encoding", "").split(","):
+        parts = [part.strip() for part in item.split(";")]
+        token = parts[0].lower()
+        if not token:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            name, separator, value = parameter.partition("=")
+            if separator and name.strip().lower() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+                if not 0.0 <= quality <= 1.0:
+                    quality = 0.0
+                break
+        if token == encoding.lower():
+            accepted_quality = quality
+        elif token == "*":
+            wildcard_quality = quality
+    quality = accepted_quality if accepted_quality is not None else wildcard_quality
+    return quality is not None and quality > 0.0
 
 
 def start_static_preview(directory: Path, port: Optional[int] = None, host: str = "127.0.0.1") -> int:
@@ -158,7 +270,6 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
             details={"directory": str(serve_root)},
         )
     serve_dir = str(serve_root)
-
     # Explicit ports must be honored exactly; auto mode picks the next free one.
     if port is not None:
         if not 1 <= port <= 65535:
@@ -206,7 +317,7 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
                 resolved = candidate.resolve()
                 resolved.relative_to(self.root)
             except (OSError, ValueError):
-                return str(self.root / "__wobble_forbidden__")
+                return str(self.root.parent / ".__wobble_forbidden__")
             return str(resolved)
 
         def list_directory(self, path):
@@ -257,8 +368,13 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
                 index = None
                 for name in ("index.html", "index.htm"):
                     candidate = target / name
-                    if candidate.is_file():
-                        index = candidate
+                    try:
+                        resolved_candidate = candidate.resolve()
+                        resolved_candidate.relative_to(self.root)
+                    except (OSError, ValueError):
+                        continue
+                    if resolved_candidate.is_file():
+                        index = resolved_candidate
                         break
                 if index is None:
                     self._not_found("directory listing disabled")
@@ -269,9 +385,8 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
                 self._not_found()
                 return None
 
-            try:
-                handle = open(target, "rb")
-            except OSError:
+            handle = _open_contained_file(root_fd, self.root, target)
+            if handle is None:
                 self._not_found()
                 return None
 
@@ -281,7 +396,7 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
                 compressible = any(content_type.startswith(prefix) for prefix in _GZIP_TYPES)
                 compressed = None
                 if compressible and stat_result.st_size >= 1024 and _accepted(self.headers, "gzip"):
-                    compressed = _gzip_payload(target, stat_result)
+                    compressed = _gzip_payload(target, stat_result, source=handle)
 
                 if compressed is not None:
                     handle.close()
@@ -324,9 +439,25 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
             if not logger.json_mode:
                 sys.stdout.write(f"  [preview] {self.address_string()} - {args[0]}\n")
 
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise PreviewError(
+            "This platform cannot safely pin the preview directory.",
+            code="preview_secure_open_unavailable",
+            hint="Use a POSIX platform with openat/O_NOFOLLOW support.",
+        )
+    try:
+        root_fd = os.open(serve_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise PreviewError(
+            f"Cannot securely open preview directory: {exc}",
+            code="preview_directory_open_failed",
+            details={"directory": serve_dir},
+        ) from exc
+
     try:
         httpd = _ThreadingHTTPServer((host, actual_port), WobblePreviewHandler)
     except OSError as exc:
+        os.close(root_fd)
         if getattr(exc, "errno", None) in (98, 48, 10048):  # address already in use
             next_port = actual_port + 1 if actual_port < 65535 else 3000
             raise PreviewError(
@@ -393,4 +524,6 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
             code="preview_runtime_failed",
             details={"host": host, "port": actual_port},
         ) from exc
+    finally:
+        os.close(root_fd)
     return 0
