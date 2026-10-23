@@ -303,7 +303,7 @@ class TestPersistenceFailures(unittest.TestCase):
         result = deps_install("unknown-stack", self.root)
         self.assertFalse(result["success"])
         self.assertEqual(result["error_code"], "unknown_dependency_stack")
-        self.assertIn("android, node, python, or php", result["hint"])
+        self.assertIn("android, android-sdk, node, python, or php", result["hint"])
 
 
 class TestOperationalFailureStatus(unittest.TestCase):

@@ -12,6 +12,7 @@ import struct
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
+from wobble.core import packages
 from wobble.core.context import find_tool
 from wobble.core.executor import run_command
 
@@ -44,8 +45,16 @@ def find_apks(project_root: Optional[Path] = None) -> List[Path]:
                 if f.endswith(".apk"):
                     candidates.append(Path(dirpath) / f)
 
-    # Sort candidates by modification time (newest first)
-    candidates.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    # Sort candidates by modification time (newest first). A build running in
+    # parallel can delete a file between the walk and the stat, so fall back to
+    # the epoch instead of crashing the whole command.
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    candidates.sort(key=_mtime, reverse=True)
     return candidates
 
 
@@ -114,6 +123,13 @@ def inspect_apk(apk_path: Path) -> Dict[str, Any]:
 
     # Try extracting detailed Android package metadata
     metadata = _extract_badging_metadata(path)
+    schemes = []
+    if signatures:
+        schemes.append("v1 (JAR)")
+    if _has_apk_signing_block(path):
+        schemes.append("v2/v3 (APK Signing Block)")
+    if not schemes:
+        schemes = ["unsigned"]
 
     return {
         "success": True,
@@ -131,9 +147,38 @@ def inspect_apk(apk_path: Path) -> Dict[str, Any]:
         "dex_files": dex_files,
         "native_abis": sorted(list(abis)) if abis else ["universal / no native libs"],
         "has_resources": has_resources,
-        "signatures": signatures if signatures else ["v2/v3 or unsigned"],
+        "signatures": signatures,
+        "signature_schemes": schemes,
         "permissions": metadata.get("permissions", [])
     }
+
+
+def _has_apk_signing_block(apk_path: Path) -> bool:
+    """Detect the v2/v3 APK Signing Block that precedes the ZIP central directory.
+
+    v1 signatures live in ``META-INF``; v2 and v3 signatures are stored in an
+    opaque block whose 16-byte footer ("APK Sig Block 42") sits immediately
+    before the central directory.  Treating "no META-INF" as "unsigned" was
+    wrong for every modern, v2-only APK.
+    """
+    try:
+        size = Path(apk_path).stat().st_size
+        with Path(apk_path).open("rb") as handle:
+            tail_start = max(0, size - 65536)
+            handle.seek(tail_start)
+            tail = handle.read()
+            index = tail.rfind(b"PK\x05\x06")
+            if index < 0 or index + 22 > len(tail):
+                return False
+            eocd = tail[index:index + 22]
+            cd_offset = struct.unpack("<I", eocd[16:20])[0]
+            if cd_offset < 32 or cd_offset > size:
+                return False
+            handle.seek(cd_offset - 24)
+            footer = handle.read(24)
+            return len(footer) == 24 and footer[8:24] == b"APK Sig Block 42"
+    except (OSError, struct.error):
+        return False
 
 
 def _extract_badging_metadata(apk_path: Path) -> Dict[str, Any]:
@@ -240,10 +285,16 @@ def install_apk(apk_path: Path, method: str = "auto") -> Dict[str, Any]:
             return {
                 "success": False,
                 "method": "adb",
-                "error": "ADB executable not found. Install android-tools (pkg install -y android-tools) or use standard method."
+                "error": "ADB executable not found. "
+                         + (packages.install_hint(("adb",), "Install it with: ")
+                            or "Install Android platform-tools.")
+                         + " Or use the standard on-device method."
             }
         res = run_command([adb_bin, "install", "-r", str(path)], timeout=60)
-        is_success = "Success" in res.stdout
+        # `adb install` prints "Success" but can still return non-zero when
+        # several devices are attached or the package is rejected after the
+        # stream starts; require both signals before claiming success.
+        is_success = res.success and "Success" in res.stdout
         output = (res.stdout or res.stderr).strip()
         result = {
             "success": is_success,
@@ -404,7 +455,9 @@ def sign_apk(
     if not apksigner_bin:
         return {
             "success": False,
-            "error": "apksigner not found. Install it with: pkg install -y apksigner"
+            "error": "apksigner not found. "
+                     + (packages.install_hint(("apksigner",), "Install it with: ")
+                        or "Install Android build-tools with sdkmanager.")
         }
 
     from wobble.core.context import get_wobble_home

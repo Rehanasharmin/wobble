@@ -4,13 +4,95 @@ Provides native Android project scaffolding, Gradle build coordination, APK pack
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from wobble.plugins.base import BasePlugin
 from wobble.core.context import find_tool, get_android_sdk_candidates, get_java_home_candidates
+from wobble.core.executor import run_command
 from wobble.project.spec import ProjectSpec
+
+
+#: Gradle version the scaffold pins in gradle-wrapper.properties.
+WRAPPER_GRADLE_VERSION = "8.13"
+#: AGP shipped in the scaffold and the minimum Gradle it supports.
+SCAFFOLD_AGP = "8.13.2"
+MIN_GRADLE_FOR_AGP = (8, 13)
+
+
+def _parse_version(text: str) -> Optional[tuple]:
+    """Extract the first dotted version from tool output."""
+    match = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", text or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups(default="0")[:3])
+
+
+def project_agp_version(project_path: Path) -> Optional[tuple]:
+    """Read the Android Gradle Plugin version pinned by the project."""
+    for name in ("build.gradle", "build.gradle.kts"):
+        candidate = project_path / name
+        try:
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        match = re.search(r"com\.android\.tools\.build:gradle:(\d+)\.(\d+)(?:\.(\d+))?", text)
+        if match:
+            return tuple(int(part) for part in match.groups(default="0")[:3])
+    return None
+
+
+def gradle_compatibility_problem(project_path: Path) -> Optional[Dict[str, str]]:
+    """Detect a system Gradle that cannot run the project's AGP.
+
+    The scaffold ships wrapper *properties* but no ``gradlew`` (the wrapper JAR
+    is a binary artifact Wobble does not vendor).  When the wrapper is absent,
+    ``wob apk build`` falls back to the system ``gradle``; on Termux that is now
+    Gradle 9.8.2, while the scaffold's AGP 8.x line targets Gradle 8.13.  Rather
+    than letting Gradle print a stack trace, return an actionable diagnosis.
+    """
+    if (project_path / "gradlew").exists():
+        return None
+    gradle_bin = find_tool("gradle")
+    if not gradle_bin:
+        return None
+    agp = project_agp_version(project_path)
+    if not agp:
+        return None
+    version_text = ""
+    try:
+        result = run_command([gradle_bin, "--version"], cwd=project_path, timeout=25)
+        version_text = (result.stdout or "") + (result.stderr or "")
+    except Exception:
+        return None
+    gradle = _parse_version(version_text.split("Gradle", 1)[-1]) if "Gradle" in version_text else None
+    if not gradle:
+        return None
+
+    problem = None
+    if agp[0] == 8 and gradle[0] >= 9:
+        problem = (f"system Gradle {gradle[0]}.{gradle[1]} cannot run the project's "
+                   f"Android Gradle Plugin {agp[0]}.{agp[1]}")
+    elif agp[0] == 8 and (gradle[0], gradle[1]) < MIN_GRADLE_FOR_AGP:
+        problem = (f"AGP {agp[0]}.{agp[1]} needs Gradle {MIN_GRADLE_FOR_AGP[0]}."
+                   f"{MIN_GRADLE_FOR_AGP[1]} or newer, but Gradle {gradle[0]}.{gradle[1]} "
+                   "is installed")
+    elif agp[0] >= 9 and gradle < (9, 6):
+        problem = (f"AGP {agp[0]}.{agp[1]} needs Gradle 9.6 or newer, but Gradle "
+                   f"{gradle[0]}.{gradle[1]} is installed")
+    if not problem:
+        return None
+    return {
+        "reason": problem,
+        "hint": (f"This project pins Gradle {WRAPPER_GRADLE_VERSION} in "
+                 "gradle/wrapper/gradle-wrapper.properties. Generate the wrapper once "
+                 f"with 'gradle wrapper --gradle-version {WRAPPER_GRADLE_VERSION}', then "
+                 "run 'wob apk build' again (./gradlew is used automatically)."),
+        "agp": f"{agp[0]}.{agp[1]}.{agp[2]}",
+        "gradle": f"{gradle[0]}.{gradle[1]}.{gradle[2]}",
+    }
 
 
 def _xml_escape(value: str) -> str:
@@ -24,7 +106,9 @@ class AndroidPlugin(BasePlugin):
     version = "1.0.0"
     description = "Native Android Gradle application development on Termux"
     category = "android"
-    required_system_packages = ["openjdk-17", "aapt"]
+    # Verified against termux/termux-packages: aapt ships aapt+zipalign, aapt2 is
+    # a split package, apksigner is separate (and pulls openjdk-21).
+    required_system_packages = ["openjdk-17", "aapt", "aapt2", "apksigner"]
     required_tools = ["java"]
 
     def detect(self, project_path: Path) -> bool:
@@ -53,7 +137,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:8.2.2'
+        classpath 'com.android.tools.build:gradle:8.13.2'
     }
 }
 
@@ -64,8 +148,10 @@ allprojects {
     }
 }
 
-task clean(type: Delete) {
-    delete rootProject.buildDir
+// layout.buildDirectory replaced the deprecated Project.buildDir accessor,
+// which Gradle 9 removed entirely.
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
 }
 """)
 
@@ -244,7 +330,7 @@ public class MainActivity extends AppCompatActivity {{
         with open(wrapper_props, "w", encoding="utf-8") as f:
             f.write("""distributionBase=GRADLE_USER_HOME
 distributionPath=wrapper/dists
-distributionUrl=https\\://services.gradle.org/distributions/gradle-8.2-bin.zip
+distributionUrl=https\\://services.gradle.org/distributions/gradle-8.13-bin.zip
 zipStoreBase=GRADLE_USER_HOME
 zipStorePath=wrapper/dists
 """)
@@ -264,7 +350,7 @@ zipStorePath=wrapper/dists
                 "install": "wob apk install"
             },
             dependencies={
-                "system": ["openjdk-17"],
+                "system": ["openjdk-17", "aapt", "aapt2", "apksigner"],
                 "project": {"compileSdk": 34, "minSdk": 24}
             }
         )

@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from wobble import __version__
-from wobble.core import health, installer, recovery
+from wobble.core import health, installer, packages, recovery
 from wobble.core.context import (
     get_home,
     get_mount_info,
@@ -306,7 +306,7 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         "Python interpreter",
         "ok" if version_ok else "critical",
         f"Python {python['version']} ({python['implementation']}) at {python['executable']}",
-        None if version_ok else "Install Python 3.8 or newer: pkg install -y python",
+        None if version_ok else packages.install_hint(("python",), "Install Python 3.8 or newer: "),
         {"version": python["version"], "executable": python["executable"]},
     )
 
@@ -632,7 +632,9 @@ def inspect(deep: bool = False, install_root: Path = None, bin_dir: Path = None,
         _finding(
             checks, timings, "disk.space", "Free disk space", free_status,
             f"{_human_bytes(free)} free of {_human_bytes(usage.total)}",
-            None if free_status == "ok" else "pkg clean   # or remove old build outputs",
+            None if free_status == "ok" else (
+                "pkg clean   # or remove old build outputs"
+                if is_termux() else "wob clean --all   # or remove old build outputs"),
             {"free_bytes": free, "total_bytes": usage.total},
         )
     except OSError as exc:

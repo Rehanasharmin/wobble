@@ -26,21 +26,21 @@ def get_android_limitations_report() -> Dict[str, Any]:
             },
             {
                 "topic": "W^X (Write XOR Execute) & execve Constraints",
-                "reality": "Android 10+ SELinux prevents executing binaries stored on shared/external storage (/sdcard) or writable storage outside app private binaries.",
-                "solution": "All development binaries and toolchains must reside in $PREFIX/bin or $HOME/.local/bin. Wobble ensures project build scripts run from Termux private storage.",
+                "reality": "Android 10 removes execute permission for files in an app's writable home directory when the app targets API 29 or higher (W^X), and Android's shared/external storage does not support executables at all. Termux sidesteps the first rule by targeting API 28 and executes binaries from its private rootfs ($PREFIX).",
+                "solution": "All development binaries and toolchains must reside in $PREFIX/bin, $HOME/.local/bin or another private directory. Wobble never executes code from /sdcard or ~/storage.",
                 "status": "enforced_by_os"
             },
             {
                 "topic": "Phantom Process Killer & RAM Constraints",
-                "reality": "Android 12+ limits background child processes to 32 total and terminates processes that consume excessive RAM or background CPU.",
+                "reality": "Android 12+ runs a phantom-process killer that terminates an app's unmanaged child processes once more than 32 of them exist, and the low-memory killer can still reclaim large JVMs under memory pressure.",
                 "solution": "Wobble configures Gradle with --no-daemon, sets JVM heap to -Xmx1024m, and disables parallel workers by default to prevent OOM termination.",
                 "status": "mitigated"
             },
             {
-                "topic": "Android SDK & 32-bit/64-bit Binaries",
-                "reality": "Google's official SDK commandline-tools are distributed primarily for x86_64 Linux. On ARM64 Android, standard aapt/aapt2, ecj, and dx/d8 binaries compiled natively for Termux must be used.",
-                "solution": "Wobble detects native Termux aapt and openjdk packages, and configures build systems to use native Termux toolchain binaries.",
-                "status": "handled_automatically"
+                "topic": "Android SDK Availability",
+                "reality": "Google's Android SDK command-line tools are published for x86_64 Linux, not for Android itself. Termux packages aapt, aapt2, apksigner and OpenJDK natively, but nothing in Termux or in a Linux distribution provides the SDK platforms and build-tools that Gradle expects.",
+                "solution": "Install Google's command-line tools (or a trusted ARM64 port), accept the licences and fetch packages with 'sdkmanager'. 'wob deps install android-sdk' does this for you once sdkmanager is on PATH, and 'wob doctor' reports which platforms and build-tools were detected.",
+                "status": "handled_with_sdk"
             },
             {
                 "topic": "Release APK Signing",

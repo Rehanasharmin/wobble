@@ -24,7 +24,7 @@ wobble/
 │   ├── web/              # Web dev servers, framework detection, hardened preview
 │   ├── deps/             # Unified package manager routing
 │   └── plugins/          # Plugin loader, BasePlugin, built-in framework plugins
-├── tests/                # Automated unit test suite (234 tests, standard library only)
+├── tests/                # Automated unit test suite (307 tests, standard library only)
 ├── docs/                 # In-depth architectural & workflow guides
 ├── install.sh            # Standalone installer (copy + manifest + launcher)
 └── uninstall.sh          # Standalone uninstaller (projects preserved)

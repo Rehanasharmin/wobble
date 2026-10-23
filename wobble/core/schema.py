@@ -309,7 +309,7 @@ def get_cli_schema() -> Dict[str, Any]:
                 ],
                 "result_fields": [
                     "status", "counts", "checks", "regressions", "recovered", "persistent",
-                    "timings", "cache", "exit_code"
+                    "timings", "cache", "quick_fix", "exit_code"
                 ],
                 "examples": [
                     "wob doctor",

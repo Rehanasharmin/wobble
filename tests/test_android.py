@@ -2,6 +2,8 @@
 Test Android plugin, limitations reporter, and SDK detection.
 """
 
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -28,6 +30,25 @@ class TestAndroid(unittest.TestCase):
         self.assertIn("found", status)
         self.assertIn("platforms", status)
         self.assertIn("build_tools", status)
+
+    def test_scaffold_pins_supported_gradle_and_agp(self):
+        plugin = get_plugin("android")
+        self.assertIsNotNone(plugin)
+        target = Path(tempfile.mkdtemp(prefix="wobble_android_"))
+        try:
+            self.assertTrue(plugin.create_project("demo", target))
+            root_build = (target / "build.gradle").read_text()
+            wrapper = (target / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text()
+            app_build = (target / "app" / "build.gradle").read_text()
+            # AGP 8.13 requires Gradle 8.13; the wrapper must not lag behind.
+            self.assertIn("com.android.tools.build:gradle:8.13.2", root_build)
+            self.assertIn("gradle-8.13-bin.zip", wrapper)
+            # rootProject.buildDir was removed in Gradle 9.
+            self.assertIn("layout.buildDirectory", root_build)
+            self.assertNotIn("rootProject.buildDir", root_build)
+            self.assertIn("compileSdk 34", app_build)
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
 
     def test_android_plugin_build_command(self):
         p = get_plugin("android")
