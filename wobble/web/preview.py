@@ -437,7 +437,7 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
 
         def log_message(self, format, *args):
             if not logger.json_mode:
-                sys.stdout.write(f"  [preview] {self.address_string()} - {args[0]}\n")
+                sys.stdout.write(f"  preview  {self.address_string()}  {args[0]}\n")
 
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise PreviewError(
@@ -478,29 +478,29 @@ def start_static_preview(directory: Path, port: Optional[int] = None, host: str 
             if not logger.json_mode:
                 color = logger.use_color
                 print()
-                print(theme.rule("web preview", width=66, use_color=color))
-                print(theme.kv("directory", serve_dir, use_color=color, width=12))
-                print(theme.kv("local", theme.link(f"http://localhost:{actual_port}/", color),
-                               use_color=color, width=12))
+                print(theme.rule("Web preview", width=66, use_color=color))
+                print("  " + theme.kv("directory", serve_dir, use_color=color, width=10))
+                print("  " + theme.kv("local", theme.link(f"http://localhost:{actual_port}/", color),
+                                      use_color=color, width=10))
                 if lan_enabled and lan_ip and lan_ip != "127.0.0.1":
-                    print(theme.kv("network", theme.link(f"http://{lan_ip}:{actual_port}/", color),
-                                   use_color=color, width=12))
-                print(theme.rule("", width=66, use_color=color))
+                    print("  " + theme.kv("network",
+                                          theme.link(f"http://{lan_ip}:{actual_port}/", color),
+                                          use_color=color, width=10))
                 if lan_enabled:
+                    print()
                     print(theme.paint(
-                        "  [!] LAN exposure is ON: anyone on this Wi-Fi can read these files.",
-                        theme.YELLOW, theme.BOLD, enabled=color))
+                        "  warn  LAN exposure is on: anyone on this Wi-Fi can read these files.",
+                        theme.YELLOW, enabled=color))
                     print(theme.paint(
-                        "      Use 'wob preview' (without --lan) on public networks.",
+                        "        Use 'wob preview' without --lan on public networks.",
                         theme.DIM, enabled=color))
                 else:
                     print(theme.paint(
-                        "  Locked to localhost. To test from another device: wob preview --lan",
+                        "  Localhost only. For another device: wob preview --lan",
                         theme.DIM, enabled=color))
                 print(theme.paint(
-                    "  Secrets (.env, .git, keys) and directory listings are always blocked.",
-                    theme.DIM, enabled=color))
-                print(theme.paint("  Press Ctrl+C to stop.", theme.DIM, enabled=color))
+                    "  .env, .git and keys are always blocked.", theme.DIM, enabled=color))
+                print(theme.paint("  Ctrl+C to stop.", theme.DIM, enabled=color))
                 print()
                 sys.stdout.flush()
             else:

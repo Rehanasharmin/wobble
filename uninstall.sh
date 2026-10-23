@@ -10,7 +10,7 @@
 set -eu
 
 if [ -z "${HOME:-}" ]; then
-    printf '[x] HOME is not set; refusing to guess where Wobble lives.\n' >&2
+    printf 'error  HOME is not set; refusing to guess where Wobble lives.\n' >&2
     exit 1
 fi
 
@@ -26,10 +26,10 @@ if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
     RESET=""; BOLD=""; DIM=""; CYAN=""; GREEN=""; YELLOW=""; RED=""
 fi
 
-info() { printf '  %s[i]%s %s\n' "$CYAN" "$RESET" "$1"; }
-ok()   { printf '  %s[+]%s %s\n' "$GREEN$BOLD" "$RESET" "$1"; }
-warn() { printf '  %s[!]%s %s\n' "$YELLOW$BOLD" "$RESET" "$1"; }
-fail() { printf '  %s[x]%s %s\n' "$RED$BOLD" "$RESET" "$1" >&2; }
+info() { printf '  %sinfo%s   %s\n' "$CYAN" "$RESET" "$1"; }
+ok()   { printf '  %sok%s     %s\n' "$GREEN$BOLD" "$RESET" "$1"; }
+warn() { printf '  %swarn%s   %s\n' "$YELLOW$BOLD" "$RESET" "$1"; }
+fail() { printf '  %serror%s  %s\n' "$RED$BOLD" "$RESET" "$1" >&2; }
 
 usage() {
     printf '%sUsage:%s sh uninstall.sh [--purge] [--yes] [--root DIR] [--bin DIR]\n\n' "$BOLD" "$RESET"
@@ -75,11 +75,10 @@ case "$BIN_DIR" in
     ""|"/") fail "Refusing to use unsafe launcher directory: '$BIN_DIR'"; exit 1 ;;
 esac
 
-printf '\n%s+--[ wobble uninstaller ]--------------------------------------+%s\n' "$CYAN" "$RESET"
-printf '  %sapp dir:%s  %s\n' "$DIM" "$RESET" "$INSTALL_ROOT"
-printf '  %slauncher:%s %s\n' "$DIM" "$RESET" "$BIN_DIR/wob"
-printf '  %spurge:%s    %s\n' "$DIM" "$RESET" "$([ "$PURGE" = 1 ] && echo yes || echo no)"
-printf '%s+---------------------------------------------------------------+%s\n\n' "$CYAN" "$RESET"
+printf '\n%sWobble uninstaller%s\n' "$BOLD" "$RESET"
+printf '  %sapp dir%s   %s\n' "$DIM" "$RESET" "$INSTALL_ROOT"
+printf '  %slauncher%s  %s\n' "$DIM" "$RESET" "$BIN_DIR/wob"
+printf '  %spurge%s     %s\n\n' "$DIM" "$RESET" "$([ "$PURGE" = 1 ] && echo yes || echo no)"
 
 if [ "$ASSUME_YES" != 1 ]; then
     if [ -t 0 ]; then

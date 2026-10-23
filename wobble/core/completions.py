@@ -28,7 +28,7 @@ _wob_completions() {
         deps)     subcmds="install add remove doctor list" ;;
         plugin)   subcmds="list info" ;;
         config)   subcmds="list get set" ;;
-        self)     subcmds="status verify repair rescue watch incidents install uninstall" ;;
+        self)     subcmds="status health verify repair rescue watch incidents install uninstall" ;;
         install)  subcmds="" ;;
         uninstall) subcmds="" ;;
         rescue)    subcmds="" ;;
@@ -58,29 +58,30 @@ ZSH_COMPLETION = r"""#compdef wob
 _wob() {
     local -a cmds
     cmds=(
-        'create:Create a new Android or Web project'
-        'project:Manage and inspect projects'
-        'android:Native Android development'
-        'web:Web development workflows'
-        'apk:Locate, inspect, build, and install APKs'
-        'deps:Unified package and dependency management'
-        'doctor:Run comprehensive environment health diagnostics'
-        'plugin:List and inspect framework plugins'
-        'config:Manage persistent user configuration'
-        'clean:Clean temporary caches and build files'
-        'self:Install, verify, or uninstall Wobble itself'
-        'install:Install Wobble as standalone software'
-        'uninstall:Remove the Wobble installation'
-        'banner:Print the ASCII wordmark'
-        'about:Show version, install path, and environment'
-        'version:Print the Wobble version'
-        'help:Show the full help text'
-        'update:Check for Wobble updates'
-        'schema:Output machine-readable CLI schema'
-        'completion:Generate shell completion script'
-        'build:Intelligent build for current project'
-        'dev:Start dev server for current project'
-        'preview:Preview current project locally and on LAN'
+        'create:Create an Android or web project'
+        'project:Manage your projects'
+        'android:Native Android projects'
+        'web:Web development'
+        'apk:Build and manage APKs'
+        'deps:Install dependencies and toolchains'
+        'doctor:Check Termux and the toolchain'
+        'plugin:Browse framework templates'
+        'config:Read and write settings'
+        'clean:Remove build output'
+        'self:Check, repair and maintain Wobble'
+        'install:Install Wobble as software'
+        'uninstall:Remove the installation'
+        'rescue:Emergency recovery'
+        'update:Check for updates'
+        'version:Print the version'
+        'help:Show help'
+        'banner:Print the wordmark'
+        'about:Show version and environment'
+        'schema:Print the CLI schema (JSON)'
+        'completion:Generate shell completion'
+        'build:Build the current project'
+        'dev:Run the current project'
+        'preview:Preview the current project'
     )
     if (( CURRENT == 2 )); then
         _describe 'command' cmds
@@ -95,7 +96,7 @@ _wob() {
         deps)     _values 'subcommand' install add remove doctor list ;;
         plugin)   _values 'subcommand' list info ;;
         config)   _values 'subcommand' list get set ;;
-        self)     _values 'subcommand' status verify install uninstall ;;
+        self)     _values 'subcommand' status health verify repair rescue watch incidents install uninstall ;;
         completion) _values 'shell' bash zsh ;;
     esac
 }

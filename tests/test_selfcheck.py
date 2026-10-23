@@ -138,8 +138,11 @@ class TestHealthyInstall(SelfCheckBase):
     def test_render_contains_summary(self):
         rendered = selfcheck.render(self.inspect(), use_color=False)
         self.assertIn("wobble self status", rendered)
-        self.assertIn("summary", rendered)
+        self.assertIn("summary", rendered.lower())
         self.assertIn("ms", rendered)
+        # The new layout is deliberately quiet: no boxed rules, no badges.
+        self.assertNotIn("+--[", rendered)
+        self.assertNotIn("[ OK ]", rendered)
 
 
 class TestBreakageDetection(SelfCheckBase):
@@ -372,7 +375,9 @@ class TestSelfCli(SelfCheckBase):
         result = self.run_cli("self", "watch", "--interval", "0.2", "--count", "2")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("watching installation health", result.stdout)
-        self.assertEqual(result.stdout.count("["), 3)  # header + one line per tick
+        tick_lines = [line for line in result.stdout.splitlines()
+                      if line[:2].isdigit() and line[2:3] == ":"]
+        self.assertEqual(len(tick_lines), 2)  # one line per tick, no bracket noise
 
     def test_watch_json_lines(self):
         result = self.run_cli("--json", "self", "watch", "--interval", "0.2", "--count", "2")

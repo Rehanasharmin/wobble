@@ -1068,40 +1068,48 @@ def run_doctor(json_mode: bool = False, quick: bool = False, only: Optional[str]
     logger = get_logger()
     color = logger.use_color
     print()
-    print(theme.banner(color, theme.TAGLINE))
-    print()
-    print(theme.rule("environment doctor", width=70, use_color=color))
-
+    print(theme.rule("Environment doctor", width=70, use_color=color))
     if selected:
-        print()
-        print(theme.paint(f"  filtered to: {', '.join(selected)}", theme.DIM, enabled=color))
+        print(theme.paint(f"  filtered to {', '.join(selected)}", theme.DIM, enabled=color))
 
+    import shutil
+    import textwrap
+
+    wrap_width = max(40, min(shutil.get_terminal_size((80, 24)).columns, 100) - 18)
+    label_width = min(30, max((len(r.name) for r in results), default=0) + 2)
     current_category = ""
     for result in results:
         if result.category != current_category:
             current_category = result.category
             print()
-            print(theme.paint(f"  {current_category.upper()}", theme.BOLD, theme.BRIGHT_WHITE,
-                              enabled=color))
-        print(f"  {theme.badge(result.status, color)} {result.name:<26} {result.details}")
-        if result.problem:
-            print(f"        {theme.paint('problem:', theme.DIM, enabled=color)} {result.problem}")
-        if result.fix:
-            print(f"        {theme.paint('fix:', theme.CYAN, enabled=color)} {result.fix}")
+            print(theme.paint(current_category, theme.BOLD, enabled=color))
+        print("  " + theme.check(result.status, result.name, result.details,
+                                 use_color=color, label_width=label_width))
+        # One short remediation block per failing check; the details already
+        # explain the problem, so the old "problem:" line was pure noise.
+        if result.status != "ok" and result.fix:
+            lines = textwrap.wrap(result.fix, width=wrap_width) or [""]
+            print(f"          {theme.paint('fix', theme.DIM, enabled=color)}  {lines[0]}")
+            for extra in lines[1:]:
+                print(f"               {extra}")
 
     # -- change history ----------------------------------------------
     if diff.get("regressions") or diff.get("recovered") or diff.get("persistent"):
         print()
-        print(theme.rule("changes since last run", width=70, use_color=color))
+        print(theme.rule("Changes", width=70, use_color=color))
+        change_width = 12
         for item in diff.get("regressions", [])[:6]:
-            print(f"  {theme.badge('warning', color)} regression  {item['name']}  "
-                  f"{item['from']} -> {item['to']}")
+            print("  " + theme.check("warning", "regression", f"{item['name']}  "
+                                     f"{item['from']} -> {item['to']}",
+                                     use_color=color, label_width=change_width))
         for item in diff.get("recovered", [])[:6]:
-            print(f"  {theme.badge('ok', color)} recovered   {item['name']}  "
-                  f"{item['from']} -> {item['to']}")
+            print("  " + theme.check("ok", "recovered", f"{item['name']}  "
+                                     f"{item['from']} -> {item['to']}",
+                                     use_color=color, label_width=change_width))
         for item in diff.get("persistent", [])[:6]:
-            print(f"  {theme.badge('warning', color)} persistent  {item['name']}  "
-                  f"failing for {item['days']}d (since {item['since_iso']})")
+            print("  " + theme.check("warning", "persistent", f"{item['name']}  "
+                                     f"failing for {item['days']}d (since {item['since_iso']})",
+                                     use_color=color, label_width=change_width))
         if not diff.get("regressions") and not diff.get("recovered"):
             print(f"  {theme.paint('no status changes', theme.DIM, enabled=color)}")
 
@@ -1110,49 +1118,47 @@ def run_doctor(json_mode: bool = False, quick: bool = False, only: Optional[str]
     score = int(round(100 * (counts["ok"] + 0.55 * counts["warning"]) / total))
     if counts["error"]:
         score = min(score, 40)
-    summary = [
-        f"{theme.progress_bar(score, width=20, use_color=color, invert=True)}  health",
-        f"{theme.badge('ok', color)} passed {counts['ok']}   "
-        f"{theme.badge('warning', color)} warnings {counts['warning']}",
-        f"{theme.badge('missing', color)} missing {counts['missing']}   "
-        f"{theme.badge('error', color)} errors {counts['error']}",
-        f"{theme.paint('scan', theme.DIM)} {report_data['elapsed_ms']} ms"
-        + ("  (quick)" if quick else "")
-        + (f"  cache {probe_cache['fresh']} probes"
-           if probe_cache.get("enabled") and probe_cache.get("fresh") else ""),
-    ]
-    if diff.get("regressions"):
-        summary.append(f"{theme.paint('changes', theme.DIM)} {len(diff['regressions'])} "
-                       f"regression(s) since last run")
     print()
-    print(theme.box("summary", summary, width=70, use_color=color))
+    print(theme.rule("Summary", width=70, use_color=color))
+    print(f"  health  {theme.progress_bar(score, width=20, use_color=color, invert=True)}")
+    def plural(n, word):
+        return f"{n} {word}{'' if n == 1 else 's'}"
+
+    print(f"  {counts['ok']} ok   {plural(counts['warning'], 'warning')}   "
+          f"{counts['missing']} missing   {plural(counts['error'], 'error')}")
+    scan = f"scan {report_data['elapsed_ms']} ms"
+    if quick:
+        scan += " (quick)"
+    if probe_cache.get("enabled") and probe_cache.get("fresh"):
+        scan += f"   cache {probe_cache['fresh']} probes"
+    print(f"  {theme.paint(scan, theme.DIM, enabled=color)}")
+    if diff.get("regressions"):
+        print(f"  {len(diff['regressions'])} regression(s) since the last run")
 
     if timings:
         print()
-        timing_rows = []
+        print(theme.rule("Timings", width=70, use_color=color))
         for key, value in (report_data.get("timings") or {}).items():
             if isinstance(value, (int, float)) and not isinstance(value, bool):
-                timing_rows.append(f"{key:<18} {value} ms")
+                print(f"  {key:<20} {value} ms")
             elif isinstance(value, bool):
-                timing_rows.append(f"{key:<18} {'yes' if value else 'no'}")
-        timing_rows.append(f"{'cache entries':<18} {probe_cache.get('fresh', 0)} fresh / "
-                           f"{probe_cache.get('entries', 0)} total")
-        print(theme.box("timings", timing_rows, width=70, use_color=color))
+                print(f"  {key:<20} {'yes' if value else 'no'}")
+        print(f"  {'cache entries':<20} {probe_cache.get('fresh', 0)} fresh / "
+              f"{probe_cache.get('entries', 0)} total")
 
     quick_fix = report_data.get("quick_fix") or {}
     if quick_fix.get("command"):
         print()
-        print(theme.paint("  Quick fix:", theme.BOLD, theme.YELLOW, enabled=color),
-              quick_fix["command"])
+        print(f"  {theme.paint('fix', theme.YELLOW, theme.BOLD, enabled=color)}  "
+              f"{quick_fix['command']}")
         if quick_fix.get("note"):
-            print(theme.paint(f"             {quick_fix['note']}", theme.DIM, enabled=color))
+            print(theme.paint(f"       {quick_fix['note']}", theme.DIM, enabled=color))
         elif quick_fix.get("unavailable"):
-            print(theme.paint("             Some tools above are not packaged here; "
+            print(theme.paint("       Some tools above are not packaged here; "
                               "see their individual fixes.", theme.DIM, enabled=color))
 
     if counts["missing"] == 0 and counts["error"] == 0 and counts["warning"] == 0:
         print()
-        print(theme.paint("  All checks passed. Happy building.", theme.GREEN, theme.BOLD,
-                          enabled=color))
+        print(theme.paint("  All checks passed.", theme.GREEN, enabled=color))
     print()
     return report_data

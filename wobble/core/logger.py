@@ -29,35 +29,38 @@ class Logger:
     def _paint(self, text: str, *styles: str) -> str:
         return theme.paint(text, *styles, enabled=self.use_color)
 
-    def info(self, msg: str, prefix: str = "[i]"):
-        if not self.json_mode:
-            print(f"{self._paint(prefix, theme.CYAN)} {msg}")
+    def _say(self, label: str, color: str, msg: str, stream=None):
+        """Print a short coloured word instead of bracket decorations."""
+        print(f"{self._paint(label.ljust(5), color, theme.BOLD)} {msg}",
+              file=stream or sys.stdout)
 
-    def success(self, msg: str, prefix: str = "[+]"):
+    def info(self, msg: str, prefix: str = "info"):
         if not self.json_mode:
-            print(f"{self._paint(prefix, theme.GREEN, theme.BOLD)} {msg}")
+            self._say("info", theme.CYAN, msg)
 
-    def warn(self, msg: str, prefix: str = "[!]"):
+    def success(self, msg: str, prefix: str = "ok"):
+        if not self.json_mode:
+            self._say("ok", theme.GREEN, msg)
+
+    def warn(self, msg: str, prefix: str = "warn"):
         self.warnings.append(str(msg))
         if not self.json_mode:
-            print(f"{self._paint(prefix, theme.YELLOW, theme.BOLD)} {msg}")
+            self._say("warn", theme.YELLOW, msg)
 
-    def error(self, msg: str, prefix: str = "[x]"):
+    def error(self, msg: str, prefix: str = "error"):
         self.errors.append(str(msg))
         if not self.json_mode:
-            print(f"{self._paint(prefix, theme.RED, theme.BOLD)} {msg}", file=sys.stderr)
+            self._say("error", theme.RED, msg, stream=sys.stderr)
 
     def heading(self, title: str):
-        """Print a compact ASCII section header."""
+        """Print a quiet section heading (no border, no filler characters)."""
         if not self.json_mode:
             print()
-            print(theme.rule(title, width=64, use_color=self.use_color))
-        else:
-            pass
+            print(self._paint(title, theme.BOLD))
 
     def step(self, step_name: str):
         if not self.json_mode:
-            print(f"  {self._paint('->', theme.BLUE)} {step_name}")
+            print(f"  {self._paint('-', theme.BLUE)} {step_name}")
 
     def detail(self, key: str, value: Any):
         if not self.json_mode:
@@ -81,10 +84,10 @@ class Logger:
             print(self._paint(msg, theme.DIM))
 
     def status(self, status: str, label: str, detail: str = ""):
-        """Print an aligned ASCII badge row, e.g. ``[ OK ] CPU Architecture ...``."""
+        """Print one aligned status row, e.g. ``ok   manifest   verified``."""
         if not self.json_mode:
-            suffix = f" {detail}" if detail else ""
-            print(f"  {theme.badge(status, self.use_color)} {label}{suffix}")
+            print("  " + theme.check(status, label, detail, use_color=self.use_color,
+                                     label_width=18))
 
     def box(self, title: str, rows: Iterable[str], width: int = 64):
         if not self.json_mode:

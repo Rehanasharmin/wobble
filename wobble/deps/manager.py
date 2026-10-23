@@ -135,7 +135,7 @@ def _install_android_sdk(logger) -> Dict[str, Any]:
             "hint": packages.android_sdk_hint(),
         }
 
-    logger.heading("Installing Android SDK components via sdkmanager")
+    logger.heading("Android SDK")
     wanted = list(packages.ANDROID_SDK_PACKAGES)
     logger.step(f"sdkmanager packages to install: {', '.join(wanted)}")
     result = run_command([sdkmanager, *wanted], timeout=None)
@@ -160,7 +160,7 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
 
     # Predefined toolchain stacks
     if target in ("android", "android-toolchain"):
-        logger.heading("Installing Android Toolchain via System Package Manager")
+        logger.heading("Android toolchain")
         # Names come from wobble.core.packages, which mirrors the real Termux
         # repositories: aapt ships zipalign, aapt2 is a split package, and
         # apksigner is separate.  openjdk-17 is the JDK the AGP targets.
@@ -194,19 +194,19 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
         return _install_android_sdk(logger)
 
     if target in ("node", "nodejs", "web"):
-        logger.heading("Installing Node.js & Web Toolchain")
+        logger.heading("Node.js")
         cmd = _get_system_install_cmd(packages.packages_for(["nodejs"]))
         return _run_dependency_command(cmd, target=target)
 
     if target in ("python", "python3"):
-        logger.heading("Installing Python 3")
+        logger.heading("Python")
         # Debian/Fedora call this "python3", Termux calls it "python"; the map
         # resolves both instead of installing a non-existent "python" package.
         cmd = _get_system_install_cmd(packages.packages_for(["python"]))
         return _run_dependency_command(cmd, target=target)
 
     if target in ("php",):
-        logger.heading("Installing PHP")
+        logger.heading("PHP")
         cmd = _get_system_install_cmd(packages.packages_for(["php"]))
         return _run_dependency_command(cmd, target=target)
 
@@ -223,7 +223,7 @@ def deps_install(target: Optional[str] = None, project_dir: Optional[Path] = Non
     spec = find_current_project(cwd)
     pkg_mgr = resolve_package_manager(cwd, "auto")
 
-    logger.heading(f"Installing Project Dependencies using '{pkg_mgr}'")
+    logger.heading(f"Dependencies ({pkg_mgr})")
 
     if pkg_mgr in ("npm", "pnpm", "yarn"):
         tool_bin = find_tool(pkg_mgr)

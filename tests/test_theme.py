@@ -24,19 +24,38 @@ class TestBanner(unittest.TestCase):
 
 
 class TestLayout(unittest.TestCase):
-    def test_rule_and_box_widths(self):
-        for width in (40, 64, 68):
-            self.assertEqual(len(theme.rule("title", width=width, use_color=False)), width)
-            lines = theme.box("title", ["row", "x" * 200], width=width, use_color=False).splitlines()
-            self.assertTrue(all(len(line) == width for line in lines), [len(l) for l in lines])
+    def test_headings_are_plain(self):
+        # Section headings used to be ``+--[ title ]-----+`` banners. They are
+        # now a single word, so the output stays quiet and copy-pasteable.
+        self.assertEqual(theme.rule("title", use_color=False), "title")
+        self.assertNotIn("+", theme.rule("title", use_color=False))
+        self.assertNotIn("[", theme.rule("title", use_color=False))
+        divider = theme.rule("", width=40, use_color=False)
+        self.assertEqual(divider, "-" * 40)
+
+    def test_box_has_no_border(self):
+        lines = theme.box("title", ["row", "x" * 200], width=40, use_color=False).splitlines()
+        self.assertEqual(lines[0], "title")
+        self.assertEqual(lines[1], "  row")
+        self.assertTrue(all(len(line) <= 40 for line in lines), lines)
+        for line in lines:
+            self.assertNotIn("|", line)
+            self.assertNotIn("+", line)
 
     def test_badge_and_progress_are_ascii(self):
         for status in ("ok", "warning", "missing", "error", "info"):
             badge = theme.badge(status, use_color=False)
-            self.assertTrue(all(ord(ch) < 128 for ch in badge))
+            self.assertTrue(all(ord(ch) < 128 for ch in badge), badge)
+            self.assertNotIn("[", badge)
+            self.assertEqual(len(badge), theme.BADGE_WIDTH)
         bar = theme.progress_bar(42, width=10, use_color=False)
         self.assertIn("42%", bar)
         self.assertEqual(theme.visible_len(bar), len(bar))
+
+    def test_check_row_aligns_details(self):
+        first = theme.check("ok", "a", "one", use_color=False, label_width=10)
+        second = theme.check("warn", "bb", "two", use_color=False, label_width=10)
+        self.assertEqual(first.index("one"), second.index("two"))
 
     def test_kv_alignment(self):
         row = theme.kv("version", "1.2.0", use_color=False, width=10)
