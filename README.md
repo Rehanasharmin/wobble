@@ -1,6 +1,6 @@
 # Wobble (`wob`)
 
-**Wobble** is a free and open-source command-line development harness for building native Android applications and modern web projects directly inside [Termux](https://termux.dev) on Android devices.[1] Written in Python 3 with a single entry-point command (`wob`), it provides project scaffolding, resource-aware Gradle builds, zero-dependency APK inspection, on-device APK installation, LAN-ready web previews, and unified dependency management — without requiring root access, Shizuku, or a desktop computer. Also you can visit our website (Wobble CLI)[https://wobble-cli.netlify.app/].
+**Wobble** is a free and open-source command-line development harness for building native Android applications and modern web projects directly inside [Termux](https://termux.dev) on Android devices.[1] Written in Python 3 with a single entry-point command (`wob`), it provides project scaffolding, resource-aware Gradle builds, zero-dependency APK inspection, on-device APK installation, LAN-ready web previews, and unified dependency management — without requiring root access, Shizuku, or a desktop computer. Also you can visit our website [Wobble CLI](https://wobble-cli.netlify.app/).
 
 Wobble is designed around the constraints of mobile hardware and the Android security model: it disables the memory-hungry Gradle daemon by default,[5] never executes binaries from shared storage (which Android mounts with the `noexec` flag),[3][4] and installs compiled APKs through the standard Android package-installer intent rather than privileged APIs.[6]
 
